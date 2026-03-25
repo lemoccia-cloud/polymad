@@ -13,3 +13,4 @@ build/
 .venv/
 venv/
 env/
+.streamlit/secrets.toml
