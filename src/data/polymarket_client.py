@@ -12,12 +12,11 @@ from src.models.market import WeatherMarket
 
 logger = logging.getLogger(__name__)
 
-# Matches all three question formats:
-#   "Will the highest temperature in Beijing be 16°C or below on March 28?"
-#   "Will the highest temperature in Beijing be 18°C on March 28?"
+# Matches highest and lowest temperature question formats:
 #   "Will the highest temperature in Beijing be 26°C or higher on March 28?"
+#   "Will the lowest temperature in Tokyo be 5°C or below on March 28?"
 _WEATHER_PATTERN = re.compile(
-    r"^Will the highest temperature in (?P<city>.+?) be "
+    r"^Will the (?P<temp_type>highest|lowest) temperature in (?P<city>.+?) be "
     r"(?P<threshold>-?\d+(?:\.\d+)?)°C(?P<comparison> or below| or higher|) on "
     r"(?P<month>[A-Za-z]+)\s+(?P<day>\d{1,2})\??$",
     re.IGNORECASE,
@@ -58,6 +57,7 @@ def parse_weather_market(
         return None
 
     city = m.group("city").strip()
+    temp_type = m.group("temp_type").lower()  # "highest" or "lowest"
     threshold = float(m.group("threshold"))
     comparison = m.group("comparison").strip().lower()  # "", "or below", "or higher"
 
@@ -117,6 +117,7 @@ def parse_weather_market(
         resolution_date=resolution_date,
         yes_token_id=str(clob_ids[0]) if len(clob_ids) > 0 else "",
         no_token_id=str(clob_ids[1]) if len(clob_ids) > 1 else "",
+        temp_type=temp_type,
         market_implied_prob=yes_price,
         liquidity_usd=float(raw_market.get("liquidity", 0) or 0),
         volume_usd=float(raw_market.get("volume", 0) or 0),
@@ -138,7 +139,7 @@ class PolymarketClient:
     def fetch_weather_events(
         self,
         max_days: int = settings.MAX_DAYS_TO_EXPIRY,
-        max_pages: int = 20,
+        max_pages: int = 40,
     ) -> list:
         """
         Fetch active temperature events by paginating the events endpoint
@@ -178,7 +179,7 @@ class PolymarketClient:
 
             for evt in events:
                 title = evt.get("title", "")
-                if not any(w in title for w in ["temperature", "Temperature"]):
+                if not any(w in title.lower() for w in ["temperature", "high temp", "low temp"]):
                     continue
 
                 # Apply expiry filter (skip events resolving too far in the future)

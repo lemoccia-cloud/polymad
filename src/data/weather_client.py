@@ -1,7 +1,9 @@
 import logging
 import re
 import time
+import unicodedata
 from datetime import datetime, timezone
+from difflib import get_close_matches
 from typing import Optional
 
 import requests
@@ -20,6 +22,53 @@ class WeatherAPIError(Exception):
     pass
 
 
+def _normalize(name: str) -> str:
+    """Lowercase + strip accents for fuzzy city matching."""
+    nfkd = unicodedata.normalize("NFKD", name)
+    return "".join(c for c in nfkd if not unicodedata.combining(c)).lower().strip()
+
+
+def _resolve_city(city_name: str) -> Optional[tuple]:
+    """Resolve a city name to (lat, lon) with 3-layer fuzzy matching.
+
+    1. Exact match
+    2. Case-insensitive + accent-stripped match
+    3. difflib fuzzy match (cutoff=0.80)
+    """
+    coords = settings.CITY_COORDINATES
+
+    # Layer 1: exact
+    if city_name in coords:
+        return coords[city_name]
+
+    # Layer 2: normalized
+    normalized_query = _normalize(city_name)
+    for key, val in coords.items():
+        if _normalize(key) == normalized_query:
+            logger.debug("Fuzzy L2 match: %r → %r", city_name, key)
+            return val
+
+    # Layer 2b: strip common suffixes (" City", " Metropolitan", " Metro")
+    for suffix in (" city", " metropolitan", " metro", " province", " prefecture"):
+        if normalized_query.endswith(suffix):
+            stripped = normalized_query[: -len(suffix)].strip()
+            for key, val in coords.items():
+                if _normalize(key) == stripped:
+                    logger.debug("Fuzzy L2b match (suffix strip): %r → %r", city_name, key)
+                    return val
+
+    # Layer 3: difflib
+    norm_keys = [_normalize(k) for k in coords]
+    matches = get_close_matches(normalized_query, norm_keys, n=1, cutoff=0.80)
+    if matches:
+        for key in coords:
+            if _normalize(key) == matches[0]:
+                logger.debug("Fuzzy L3 match: %r → %r", city_name, key)
+                return coords[key]
+
+    return None
+
+
 class WeatherClient:
     """Fetches ensemble weather forecasts from Open-Meteo."""
 
@@ -34,25 +83,27 @@ class WeatherClient:
         threshold_celsius: float,
         direction: str,
         model: str = settings.ENSEMBLE_MODEL,
+        temp_type: str = "highest",
     ) -> WeatherForecast:
         """
         Compute model probability for a temperature market using ensemble forecasts.
 
         Args:
-            city: city name (must be in settings.CITY_COORDINATES)
+            city: city name (resolved via fuzzy matching against CITY_COORDINATES)
             resolution_date: date of the temperature observation
             threshold_celsius: temperature threshold to evaluate
-            direction: "above" (high temp >= threshold) or "below" (high temp <= threshold)
+            direction: "above" or "below" or "exact"
             model: ensemble model identifier
+            temp_type: "highest" (daily max) or "lowest" (daily min)
 
         Returns:
             WeatherForecast with model_probability as fraction of members meeting the condition.
 
         Raises:
-            CityNotFoundError: if city not in settings.CITY_COORDINATES
+            CityNotFoundError: if city cannot be resolved
             WeatherAPIError: on persistent API failure
         """
-        coords = settings.CITY_COORDINATES.get(city)
+        coords = _resolve_city(city)
         if coords is None:
             raise CityNotFoundError(
                 f"City {city!r} not found. Add it to settings.CITY_COORDINATES."
@@ -61,7 +112,7 @@ class WeatherClient:
         lat, lon = coords
         raw_response = self._fetch_ensemble_data(lat, lon, resolution_date, model)
         probability, member_count, raw_temps = self._compute_model_probability(
-            raw_response, resolution_date, threshold_celsius, direction
+            raw_response, resolution_date, threshold_celsius, direction, temp_type
         )
 
         return WeatherForecast(
@@ -104,6 +155,7 @@ class WeatherClient:
         resolution_date: datetime,
         threshold_celsius: float,
         direction: str,
+        temp_type: str = "highest",
     ) -> tuple:
         """
         Compute the fraction of ensemble members satisfying the temperature condition.
@@ -145,7 +197,8 @@ class WeatherClient:
                     return prob, 1, [daily_max]
             return 0.5, 0, []
 
-        # For each member, compute daily max temperature
+        # For each member, compute daily max or min temperature
+        use_min = (temp_type == "lowest")
         member_max_temps = []
         for key in sorted(member_keys):
             temps = hourly[key]
@@ -155,7 +208,7 @@ class WeatherClient:
                 if i < len(temps) and temps[i] is not None
             ]
             if day_temps:
-                member_max_temps.append(max(day_temps))
+                member_max_temps.append(min(day_temps) if use_min else max(day_temps))
 
         if not member_max_temps:
             return 0.5, 0, []
@@ -183,7 +236,7 @@ class WeatherClient:
 
     def get_deterministic_forecast(self, city: str, resolution_date: datetime) -> dict:
         """Fallback: single deterministic daily max temperature forecast."""
-        coords = settings.CITY_COORDINATES.get(city)
+        coords = _resolve_city(city)
         if coords is None:
             raise CityNotFoundError(f"City {city!r} not in CITY_COORDINATES")
 

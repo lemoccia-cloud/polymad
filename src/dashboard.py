@@ -283,12 +283,14 @@ def fetch_markets_cached(min_liquidity: float, max_days: int) -> list:
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_forecast_cached(
     city: str, date_str: str, threshold: float, bucket_type: str, model: str,
+    temp_type: str = "highest",
 ) -> dict:
     try:
         resolution_date = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         fc = WeatherClient().get_ensemble_forecast(
             city=city, resolution_date=resolution_date,
             threshold_celsius=threshold, direction=bucket_type, model=model,
+            temp_type=temp_type,
         )
         return {
             "model_probability": fc.model_probability,
@@ -351,6 +353,7 @@ def run_analysis(bankroll, edge_threshold, model, max_markets, cities_filter):
             threshold=market.threshold_celsius,
             bucket_type=market.bucket_type,
             model=model,
+            temp_type=getattr(market, "temp_type", "highest"),
         )
         if "error" in fd:
             skipped.append(f"{market.city}: {fd['error']}")

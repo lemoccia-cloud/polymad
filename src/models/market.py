@@ -20,6 +20,7 @@ class WeatherMarket:
     liquidity_usd: float
     volume_usd: float
     end_date: datetime
+    temp_type: str = field(default="highest")  # "highest" or "lowest"
     event_title: str = field(default="")
     raw_question: str = field(repr=False, default="")
     slug: str = field(default="")
