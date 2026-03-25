@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>polyMad — Buscador de Oportunidades</title>
+  <meta name="description" content="Encontre onde o mercado está errando. Análise de edge em tempo real no Polymarket usando modelos meteorológicos ECMWF e GFS." />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bg:       '#0a0f1e',
+            surface:  '#111827',
+            border:   '#1e293b',
+            primary:  '#1E40AF',
+            accent:   '#3B82F6',
+            cta:      '#F59E0B',
+            positive: '#34d399',
+            muted:    '#64748b',
+          },
+          fontFamily: {
+            sans: ['Plus Jakarta Sans', 'system-ui', 'sans-serif'],
+          },
+        },
+      },
+    }
+  </script>
+  <style>
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { background-color: #0a0f1e; color: #f1f5f9; font-family: 'Plus Jakarta Sans', sans-serif; }
+
+    /* Grid decorativo hero */
+    .hero-grid {
+      background-image:
+        linear-gradient(rgba(59,130,246,0.06) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(59,130,246,0.06) 1px, transparent 1px);
+      background-size: 48px 48px;
+    }
+
+    /* Glow no título */
+    .glow-text {
+      text-shadow: 0 0 40px rgba(59,130,246,0.4);
+    }
+
+    /* Glassmorphism navbar */
+    .glass {
+      background: rgba(10,15,30,0.85);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid rgba(30,41,59,0.8);
+    }
+
+    /* Card hover */
+    .card-hover {
+      transition: border-color 200ms ease, transform 200ms ease, box-shadow 200ms ease;
+    }
+    .card-hover:hover {
+      border-color: #3B82F6;
+      transform: translateY(-2px);
+      box-shadow: 0 8px 32px rgba(59,130,246,0.15);
+    }
+
+    /* CTA button */
+    .btn-cta {
+      background: linear-gradient(135deg, #F59E0B, #D97706);
+      transition: opacity 150ms ease, transform 150ms ease;
+    }
+    .btn-cta:hover { opacity: 0.92; transform: translateY(-1px); }
+    .btn-cta:active { transform: translateY(0); }
+
+    /* Input focus */
+    .email-input:focus {
+      outline: none;
+      border-color: #3B82F6;
+      box-shadow: 0 0 0 3px rgba(59,130,246,0.2);
+    }
+
+    /* Step connector */
+    .step-line {
+      background: linear-gradient(90deg, #3B82F6, transparent);
+    }
+
+    /* Success message */
+    #success-msg { display: none; }
+    #success-msg.visible { display: block; }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { transition: none !important; transform: none !important; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       NAVBAR
+  ═══════════════════════════════════════════════════════════ -->
+  <nav class="glass fixed top-0 left-0 right-0 z-50">
+    <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <!-- Logo -->
+      <div class="flex items-center gap-2">
+        <svg class="w-7 h-7 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/>
+        </svg>
+        <span class="font-bold text-lg tracking-tight text-white">polyMad</span>
+      </div>
+      <!-- Links -->
+      <div class="flex items-center gap-4">
+        <a href="https://polymad.streamlit.app" target="_blank" rel="noopener"
+           class="hidden sm:inline-flex items-center gap-1.5 text-sm text-muted hover:text-white transition-colors duration-150 cursor-pointer">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+          </svg>
+          Ver app
+        </a>
+        <a href="#waitlist"
+           class="btn-cta text-sm font-semibold text-gray-900 px-4 py-2 rounded-lg cursor-pointer">
+          Entrar na lista
+        </a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       HERO
+  ═══════════════════════════════════════════════════════════ -->
+  <section class="hero-grid min-h-screen flex flex-col justify-center pt-16">
+    <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-24 text-center">
+
+      <!-- Badge -->
+      <div class="inline-flex items-center gap-2 bg-surface border border-border rounded-full px-4 py-1.5 mb-8">
+        <span class="w-2 h-2 bg-positive rounded-full animate-pulse"></span>
+        <span class="text-xs font-medium text-positive">Acesso antecipado — beta privado</span>
+      </div>
+
+      <!-- Headline -->
+      <h1 class="glow-text text-4xl sm:text-5xl lg:text-6xl font-extrabold text-white leading-tight mb-6 max-w-4xl mx-auto">
+        O mercado está errando.<br />
+        <span class="text-accent">Você pode lucrar com isso.</span>
+      </h1>
+
+      <!-- Subheadline -->
+      <p class="text-lg sm:text-xl text-muted max-w-2xl mx-auto mb-12 leading-relaxed">
+        polyMad compara modelos meteorológicos profissionais (ECMWF &amp; GFS) com os preços do Polymarket e identifica onde há <strong class="text-white">edge real</strong> — com Kelly sizing e retorno esperado.
+      </p>
+
+      <!-- Form waitlist — hero -->
+      <form id="hero-form" action="https://formspree.io/f/xaqlwzgl" method="POST"
+            class="flex flex-col sm:flex-row gap-3 justify-center max-w-md mx-auto mb-6"
+            onsubmit="handleSubmit(event, 'hero-success')">
+        <label for="hero-email" class="sr-only">Seu e-mail</label>
+        <input id="hero-email" type="email" name="email" required
+               placeholder="seu@email.com"
+               class="email-input flex-1 bg-surface border border-border rounded-xl px-4 py-3 text-white placeholder-muted text-sm transition-all duration-150 min-w-0" />
+        <button type="submit"
+                class="btn-cta font-semibold text-gray-900 px-6 py-3 rounded-xl text-sm cursor-pointer whitespace-nowrap">
+          Entrar na waitlist
+        </button>
+      </form>
+      <p id="hero-success" class="text-positive text-sm font-medium mb-6 hidden">
+        Perfeito! Você está na lista. Avisaremos em breve.
+      </p>
+      <p class="text-xs text-muted">Sem spam. Cancele a qualquer momento.</p>
+
+      <!-- Stats row -->
+      <div class="mt-16 flex flex-wrap justify-center gap-8">
+        <div class="text-center">
+          <p class="text-2xl font-bold text-white">51</p>
+          <p class="text-xs text-muted mt-1">Membros ECMWF</p>
+        </div>
+        <div class="w-px bg-border hidden sm:block"></div>
+        <div class="text-center">
+          <p class="text-2xl font-bold text-white">100+</p>
+          <p class="text-xs text-muted mt-1">Mercados analisados</p>
+        </div>
+        <div class="w-px bg-border hidden sm:block"></div>
+        <div class="text-center">
+          <p class="text-2xl font-bold text-positive">Kelly</p>
+          <p class="text-xs text-muted mt-1">Sizing automático</p>
+        </div>
+        <div class="w-px bg-border hidden sm:block"></div>
+        <div class="text-center">
+          <p class="text-2xl font-bold text-white">4</p>
+          <p class="text-xs text-muted mt-1">Idiomas</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       COMO FUNCIONA
+  ═══════════════════════════════════════════════════════════ -->
+  <section class="py-24 px-4 sm:px-6 lg:px-8">
+    <div class="max-w-6xl mx-auto">
+      <div class="text-center mb-16">
+        <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4">Como funciona</h2>
+        <p class="text-muted max-w-xl mx-auto">Três passos para transformar dados climáticos em oportunidades de retorno.</p>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-8 relative">
+        <!-- Step 1 -->
+        <div class="card-hover bg-surface border border-border rounded-2xl p-8 cursor-default">
+          <div class="w-12 h-12 bg-primary/20 rounded-xl flex items-center justify-center mb-6">
+            <svg class="w-6 h-6 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+          </div>
+          <div class="text-xs font-semibold text-accent uppercase tracking-wider mb-3">01</div>
+          <h3 class="text-lg font-bold text-white mb-3">Escaneamos os mercados</h3>
+          <p class="text-muted text-sm leading-relaxed">Buscamos todos os mercados de temperatura no Polymarket via Gamma API e extraímos os preços implícitos do mercado.</p>
+        </div>
+
+        <!-- Step 2 -->
+        <div class="card-hover bg-surface border border-border rounded-2xl p-8 cursor-default">
+          <div class="w-12 h-12 bg-primary/20 rounded-xl flex items-center justify-center mb-6">
+            <svg class="w-6 h-6 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+            </svg>
+          </div>
+          <div class="text-xs font-semibold text-accent uppercase tracking-wider mb-3">02</div>
+          <h3 class="text-lg font-bold text-white mb-3">Calculamos o edge real</h3>
+          <p class="text-muted text-sm leading-relaxed">Comparamos a probabilidade do modelo ECMWF IFS (51 membros ensemble) com o preço do mercado. A diferença é o edge — seu lucro esperado.</p>
+        </div>
+
+        <!-- Step 3 -->
+        <div class="card-hover bg-surface border border-border rounded-2xl p-8 cursor-default">
+          <div class="w-12 h-12 bg-positive/20 rounded-xl flex items-center justify-center mb-6">
+            <svg class="w-6 h-6 text-positive" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+            </svg>
+          </div>
+          <div class="text-xs font-semibold text-positive uppercase tracking-wider mb-3">03</div>
+          <h3 class="text-lg font-bold text-white mb-3">Você vê o retorno</h3>
+          <p class="text-muted text-sm leading-relaxed">Para cada oportunidade, mostramos quanto apostar (Kelly fraction), quanto ganhar se acertar e o retorno percentual esperado.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       FEATURES
+  ═══════════════════════════════════════════════════════════ -->
+  <section class="py-24 px-4 sm:px-6 lg:px-8 bg-surface/50">
+    <div class="max-w-6xl mx-auto">
+      <div class="text-center mb-16">
+        <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4">Tudo que você precisa</h2>
+        <p class="text-muted max-w-xl mx-auto">Análise profissional de mercados de predição, direto no browser.</p>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+
+        <!-- Feature cards -->
+        <div class="card-hover bg-surface border border-border rounded-2xl p-6 cursor-default">
+          <div class="w-10 h-10 bg-primary/20 rounded-lg flex items-center justify-center mb-4">
+            <svg class="w-5 h-5 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"/><path d="M12 6v6l4 2"/>
+            </svg>
+          </div>
+          <h3 class="font-bold text-white mb-2">ECMWF IFS & GFS</h3>
+          <p class="text-muted text-sm leading-relaxed">Modelos ensemble de 51 e 31 membros. As melhores previsões meteorológicas disponíveis no mundo.</p>
+        </div>
+
+        <div class="card-hover bg-surface border border-border rounded-2xl p-6 cursor-default">
+          <div class="w-10 h-10 bg-positive/20 rounded-lg flex items-center justify-center mb-4">
+            <svg class="w-5 h-5 text-positive" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>
+            </svg>
+          </div>
+          <h3 class="font-bold text-white mb-2">Kelly Sizing</h3>
+          <p class="text-muted text-sm leading-relaxed">Cálculo automático do tamanho ideal de aposta baseado no edge real e na sua banca disponível.</p>
+        </div>
+
+        <div class="card-hover bg-surface border border-border rounded-2xl p-6 cursor-default">
+          <div class="w-10 h-10 bg-cta/20 rounded-lg flex items-center justify-center mb-4">
+            <svg class="w-5 h-5 text-cta" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+            </svg>
+          </div>
+          <h3 class="font-bold text-white mb-2">Retorno Esperado</h3>
+          <p class="text-muted text-sm leading-relaxed">Veja exatamente quanto você ganha se acertar, o EV em dólares e o retorno percentual de cada aposta.</p>
+        </div>
+
+        <div class="card-hover bg-surface border border-border rounded-2xl p-6 cursor-default">
+          <div class="w-10 h-10 bg-primary/20 rounded-lg flex items-center justify-center mb-4">
+            <svg class="w-5 h-5 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+            </svg>
+          </div>
+          <h3 class="font-bold text-white mb-2">4 Idiomas</h3>
+          <p class="text-muted text-sm leading-relaxed">Interface disponível em Português, Inglês, Espanhol e Mandarim — com i18n completo.</p>
+        </div>
+
+        <div class="card-hover bg-surface border border-border rounded-2xl p-6 cursor-default">
+          <div class="w-10 h-10 bg-primary/20 rounded-lg flex items-center justify-center mb-4">
+            <svg class="w-5 h-5 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/>
+            </svg>
+          </div>
+          <h3 class="font-bold text-white mb-2">Edge Calculator</h3>
+          <p class="text-muted text-sm leading-relaxed">Filtre por edge mínimo e veja apenas as oportunidades onde o modelo diverge significativamente do mercado.</p>
+        </div>
+
+        <div class="card-hover bg-surface border border-border rounded-2xl p-6 cursor-default">
+          <div class="w-10 h-10 bg-primary/20 rounded-lg flex items-center justify-center mb-4">
+            <svg class="w-5 h-5 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+            </svg>
+          </div>
+          <h3 class="font-bold text-white mb-2">Tema Claro/Escuro</h3>
+          <p class="text-muted text-sm leading-relaxed">Dashboard com tema adaptável. Sidebar responsiva e visualizações interativas em Plotly.</p>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       APP PREVIEW
+  ═══════════════════════════════════════════════════════════ -->
+  <section class="py-24 px-4 sm:px-6 lg:px-8">
+    <div class="max-w-6xl mx-auto text-center">
+      <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4">Veja em ação</h2>
+      <p class="text-muted max-w-xl mx-auto mb-12">Acesse o MVP já disponível ou entre na waitlist para o produto completo.</p>
+
+      <!-- Fake browser mockup -->
+      <div class="bg-surface border border-border rounded-2xl overflow-hidden shadow-2xl max-w-4xl mx-auto">
+        <!-- Browser chrome -->
+        <div class="bg-[#0d1424] px-4 py-3 flex items-center gap-3 border-b border-border">
+          <div class="flex gap-1.5">
+            <div class="w-3 h-3 rounded-full bg-[#ff5f57]"></div>
+            <div class="w-3 h-3 rounded-full bg-[#febc2e]"></div>
+            <div class="w-3 h-3 rounded-full bg-[#28c840]"></div>
+          </div>
+          <div class="flex-1 bg-[#1a2235] rounded-md px-3 py-1.5 text-xs text-muted text-left">
+            polymad.streamlit.app
+          </div>
+          <a href="https://polymad.streamlit.app" target="_blank" rel="noopener"
+             class="text-xs text-accent hover:text-white transition-colors duration-150 cursor-pointer font-medium">
+            Abrir →
+          </a>
+        </div>
+        <!-- Mockup content -->
+        <div class="p-8 bg-gradient-to-b from-[#0f172a] to-[#0a0f1e]">
+          <div class="grid grid-cols-3 gap-4 mb-6">
+            <div class="bg-surface/80 border border-border rounded-xl p-4">
+              <p class="text-xs text-muted mb-1">Edge detectado</p>
+              <p class="text-2xl font-bold text-positive">+18.4%</p>
+            </div>
+            <div class="bg-surface/80 border border-border rounded-xl p-4">
+              <p class="text-xs text-muted mb-1">EV esperado</p>
+              <p class="text-2xl font-bold text-accent">+$12.30</p>
+            </div>
+            <div class="bg-surface/80 border border-border rounded-xl p-4">
+              <p class="text-xs text-muted mb-1">Kelly bet</p>
+              <p class="text-2xl font-bold text-white">$42.50</p>
+            </div>
+          </div>
+          <div class="bg-surface/80 border border-positive/30 rounded-xl p-4 flex items-start gap-4">
+            <div class="w-2 h-2 bg-positive rounded-full mt-1.5 flex-shrink-0 animate-pulse"></div>
+            <div>
+              <p class="text-sm font-semibold text-white mb-1">New York City — Temperatura máxima &gt; 85°F</p>
+              <p class="text-xs text-muted">Modelo: 73.2% · Mercado: 54.8% · Edge: +18.4% · Retorno: +82.5%</p>
+            </div>
+            <div class="ml-auto text-xs font-bold text-positive bg-positive/10 border border-positive/20 rounded-full px-3 py-1">
+              ALTA
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mt-8">
+        <a href="https://polymad.streamlit.app" target="_blank" rel="noopener"
+           class="inline-flex items-center gap-2 text-accent hover:text-white transition-colors duration-150 cursor-pointer font-medium text-sm">
+          Acessar o app agora
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+          </svg>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       WAITLIST — CTA FINAL
+  ═══════════════════════════════════════════════════════════ -->
+  <section id="waitlist" class="py-24 px-4 sm:px-6 lg:px-8 bg-surface/50">
+    <div class="max-w-2xl mx-auto text-center">
+      <!-- Badge urgência -->
+      <div class="inline-flex items-center gap-2 border border-cta/30 bg-cta/10 rounded-full px-4 py-1.5 mb-8">
+        <svg class="w-3.5 h-3.5 text-cta" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+        </svg>
+        <span class="text-xs font-semibold text-cta">Vagas limitadas para o beta</span>
+      </div>
+
+      <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4">
+        Entre na waitlist.<br />Seja o primeiro a saber.
+      </h2>
+      <p class="text-muted mb-10 leading-relaxed">
+        Acesso antecipado ao produto completo: alertas automáticos, análise multi-categoria (política, esportes, finanças) e integração com sua carteira Polymarket.
+      </p>
+
+      <!-- Form -->
+      <form id="waitlist-form" action="https://formspree.io/f/xaqlwzgl" method="POST"
+            class="flex flex-col sm:flex-row gap-3 max-w-md mx-auto"
+            onsubmit="handleSubmit(event, 'waitlist-success')">
+        <label for="waitlist-email" class="sr-only">Seu e-mail</label>
+        <input id="waitlist-email" type="email" name="email" required
+               placeholder="seu@email.com"
+               class="email-input flex-1 bg-bg border border-border rounded-xl px-4 py-3 text-white placeholder-muted text-sm transition-all duration-150 min-w-0" />
+        <button type="submit"
+                class="btn-cta font-semibold text-gray-900 px-6 py-3 rounded-xl text-sm cursor-pointer whitespace-nowrap">
+          Entrar na waitlist
+        </button>
+      </form>
+      <p id="waitlist-success" class="text-positive text-sm font-medium mt-4 hidden">
+        Perfeito! Você está na lista. Avisaremos assim que abrir o acesso.
+      </p>
+      <p class="text-xs text-muted mt-4">Sem spam. Cancele a qualquer momento.</p>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       FOOTER
+  ═══════════════════════════════════════════════════════════ -->
+  <footer class="py-12 px-4 sm:px-6 lg:px-8 border-t border-border">
+    <div class="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-6">
+      <!-- Logo -->
+      <div class="flex items-center gap-2">
+        <svg class="w-5 h-5 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/>
+        </svg>
+        <span class="font-bold text-white">polyMad</span>
+        <span class="text-muted text-sm">· Buscador de Oportunidades</span>
+      </div>
+      <!-- Links -->
+      <div class="flex items-center gap-6 text-sm text-muted">
+        <a href="https://polymad.streamlit.app" target="_blank" rel="noopener"
+           class="hover:text-white transition-colors duration-150 cursor-pointer">App</a>
+        <a href="https://github.com/lemoccia-cloud/polymad" target="_blank" rel="noopener"
+           class="hover:text-white transition-colors duration-150 cursor-pointer">GitHub</a>
+        <a href="https://github.com/lemoccia-cloud/polymad/blob/main/docs/saas-roadmap.md" target="_blank" rel="noopener"
+           class="hover:text-white transition-colors duration-150 cursor-pointer">Roadmap</a>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    function handleSubmit(event, successId) {
+      event.preventDefault();
+      const form = event.target;
+      const btn = form.querySelector('button[type="submit"]');
+      const successEl = document.getElementById(successId);
+
+      btn.disabled = true;
+      btn.textContent = 'Enviando...';
+
+      fetch(form.action, {
+        method: 'POST',
+        body: new FormData(form),
+        headers: { 'Accept': 'application/json' },
+      })
+      .then(res => {
+        if (res.ok) {
+          form.reset();
+          form.style.display = 'none';
+          successEl.classList.remove('hidden');
+        } else {
+          btn.disabled = false;
+          btn.textContent = 'Tentar novamente';
+          alert('Erro ao enviar. Tente novamente.');
+        }
+      })
+      .catch(() => {
+        btn.disabled = false;
+        btn.textContent = 'Tentar novamente';
+        alert('Erro de conexão. Tente novamente.');
+      });
+    }
+  </script>
+</body>
+</html>
