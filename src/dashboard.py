@@ -23,6 +23,7 @@ from src.analysis.kelly import compute_position_size, kelly_summary
 from src.models.market import WeatherForecast, OpportunityResult
 from src.components.wallet import render_wallet_sidebar, render_wallet_tab
 from src.notifications import send_alert_email
+from src.data.supabase_client import save_scan, get_scan_history, build_alerts_summary
 
 # ─── Page config ─────────────────────────────────────────────────────────────
 
@@ -943,6 +944,97 @@ def render_sidebar(th: dict):
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
+def render_history_tab(t: "callable", th: dict, wallet_address: str) -> None:
+    """Render the Scan History tab using Supabase data."""
+    st.subheader(t("scan_history_title"))
+
+    try:
+        secrets = st.secrets
+        supabase_url = secrets.get("SUPABASE_URL", "")
+        anon_key = secrets.get("SUPABASE_ANON_KEY", "")
+    except Exception:
+        supabase_url, anon_key = "", ""
+
+    if not supabase_url or not anon_key:
+        st.info(t("history_no_supabase"))
+        st.code(
+            'SUPABASE_URL      = "https://xxxx.supabase.co"\n'
+            'SUPABASE_ANON_KEY = "eyJ..."',
+            language="toml",
+        )
+        return
+
+    with st.spinner(t("loading_history")):
+        history = get_scan_history(supabase_url, anon_key, wallet_address or None, limit=30)
+
+    if not history:
+        st.info(t("history_no_data"))
+        return
+
+    # ── Chart: alerts over time ───────────────────────────────────────────────
+    dates = []
+    alert_counts = []
+    market_counts = []
+
+    for row in history:
+        try:
+            dt = datetime.fromisoformat(row["created_at"].replace("Z", "+00:00"))
+            dates.append(dt)
+            alert_counts.append(row.get("alert_count", 0))
+            market_counts.append(row.get("total_markets", 0))
+        except (KeyError, ValueError):
+            continue
+
+    if dates:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=dates, y=alert_counts,
+            mode="lines+markers",
+            name=t("total_alerts_col"),
+            line=dict(color="#00c896", width=2),
+            marker=dict(size=6),
+        ))
+        fig.add_trace(go.Scatter(
+            x=dates, y=market_counts,
+            mode="lines",
+            name=t("markets_label"),
+            line=dict(color="#3b82f6", width=1, dash="dot"),
+        ))
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor=th.get("plot_bg", "rgba(0,0,0,0)"),
+            font=dict(color=th.get("plot_text", "#94a3b8"), size=12),
+            margin=dict(l=0, r=0, t=10, b=0),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+            xaxis=dict(gridcolor=th.get("plot_grid", "#334155")),
+            yaxis=dict(gridcolor=th.get("plot_grid", "#334155")),
+            height=220,
+        )
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    # ── Table ─────────────────────────────────────────────────────────────────
+    table_rows = []
+    for row in history:
+        try:
+            dt = datetime.fromisoformat(row["created_at"].replace("Z", "+00:00"))
+            date_str = dt.strftime("%Y-%m-%d %H:%M")
+        except (KeyError, ValueError):
+            date_str = "—"
+
+        alerts_summary = row.get("alerts_summary") or []
+        top_city = alerts_summary[0]["city"] if alerts_summary else "—"
+
+        table_rows.append({
+            t("scan_date_col"): date_str,
+            t("total_alerts_col"): row.get("alert_count", 0),
+            t("markets_label"): row.get("total_markets", 0),
+            "Top City": top_city,
+        })
+
+    if table_rows:
+        st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+
+
 def main():
     if "lang" not in st.session_state:
         st.session_state["lang"] = "en"
@@ -958,6 +1050,10 @@ def main():
     render_category_bar(th)
 
     # ── Run / load state ────────────────────────────────────────────────────
+    # Cache a PolymarketClient for the wallet tab (positions fetch)
+    if "_poly_client" not in st.session_state:
+        st.session_state["_poly_client"] = PolymarketClient()
+
     if run_btn or "results" not in st.session_state:
         results, skipped, debug_info = run_analysis(
             bankroll=bankroll, edge_threshold=edge_threshold,
@@ -968,6 +1064,26 @@ def main():
             "bankroll": bankroll, "edge_threshold": edge_threshold,
             "last_run": datetime.now(tz=timezone.utc).strftime("%H:%M UTC"),
         })
+
+        # ── Save scan to Supabase ────────────────────────────────────────────
+        if run_btn and results:
+            try:
+                supa_url = st.secrets.get("SUPABASE_URL", "")
+                supa_key = st.secrets.get("SUPABASE_ANON_KEY", "")
+                if supa_url and supa_key:
+                    alerts_summary = build_alerts_summary(results)
+                    saved = save_scan(
+                        supabase_url=supa_url,
+                        anon_key=supa_key,
+                        wallet_address=wallet_address or "anonymous",
+                        alert_count=sum(1 for r in results if r.alert),
+                        total_markets=len(results),
+                        alerts_summary=alerts_summary,
+                    )
+                    if saved:
+                        st.toast(t("scan_saved"), icon="💾")
+            except Exception:
+                pass  # Supabase is optional — never block the app
 
         # ── E-mail notifications ─────────────────────────────────────────────
         if run_btn and notify_enabled and notify_email and "@" in notify_email:
@@ -1027,8 +1143,9 @@ def main():
     today_date = now_utc.date()
     week_end = today_date + timedelta(days=7)
 
-    tab_alerts, tab_today, tab_week, tab_all, tab_wallet = st.tabs([
-        t("tab_alerts"), t("tab_today"), t("tab_week"), t("tab_all"), t("tab_wallet"),
+    tab_alerts, tab_today, tab_week, tab_all, tab_wallet, tab_history = st.tabs([
+        t("tab_alerts"), t("tab_today"), t("tab_week"), t("tab_all"),
+        t("tab_wallet"), t("tab_history"),
     ])
 
     # ── Tab: Alerts ───────────────────────────────────────────────────────────
@@ -1103,7 +1220,14 @@ def main():
 
     # ── Tab: Wallet ───────────────────────────────────────────────────────────
     with tab_wallet:
-        render_wallet_tab(t, wallet_address, results, bankroll_used)
+        render_wallet_tab(
+            t, wallet_address, results, bankroll_used,
+            poly_client=st.session_state.get("_poly_client"),
+        )
+
+    # ── Tab: Histórico ────────────────────────────────────────────────────────
+    with tab_history:
+        render_history_tab(t, th, wallet_address)
 
 
 if __name__ == "__main__":

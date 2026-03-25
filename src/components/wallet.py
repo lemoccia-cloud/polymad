@@ -188,8 +188,14 @@ def render_wallet_sidebar(t: "callable") -> str:
     return address
 
 
-def render_wallet_tab(t: "callable", address: str, results: list, bankroll: float) -> None:
-    """Render the Wallet tab content."""
+def render_wallet_tab(
+    t: "callable",
+    address: str,
+    results: list,
+    bankroll: float,
+    poly_client=None,
+) -> None:
+    """Render the Wallet tab content with real positions and scan opportunities."""
     if not address:
         st.info(f"🦊 {t('connect_wallet')} to see your portfolio.")
         render_metamask_button(connect_label=t("connect_wallet"))
@@ -197,6 +203,7 @@ def render_wallet_tab(t: "callable", address: str, results: list, bankroll: floa
 
     short = address[:6] + "..." + address[-4:]
 
+    # ── Header cards ─────────────────────────────────────────────────────────
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown(
@@ -232,6 +239,85 @@ def render_wallet_tab(t: "callable", address: str, results: list, bankroll: floa
         )
 
     st.markdown("---")
+
+    # ── Real positions ────────────────────────────────────────────────────────
+    st.subheader(t("positions_open"))
+
+    if poly_client is not None:
+        with st.spinner(t("fetching_positions")):
+            positions = poly_client.get_user_positions(address)
+    else:
+        positions = []
+
+    if positions:
+        import pandas as pd
+
+        # Build condition_id → WeatherMarket lookup from current scan results
+        market_by_condition = {r.market.condition_id: r.market for r in results} if results else {}
+
+        rows = []
+        for pos in positions:
+            cid = pos.get("conditionId", "")
+            outcome_idx = pos.get("outcomeIndex", 0)
+            side = "YES" if outcome_idx == 0 else "NO"
+            size = float(pos.get("size", 0))
+            avg_price = float(pos.get("avgPrice", 0))
+            current_value = float(pos.get("currentValue", 0))
+            initial_value = float(pos.get("initialValue", 0))
+            pnl = current_value - initial_value
+
+            # Use matched market title if available, else fallback to API title
+            mkt = market_by_condition.get(cid)
+            title = (mkt.question[:60] + "...") if mkt else pos.get("title", cid[:20])
+
+            rows.append({
+                t("market_col"): title,
+                t("side_col"): side,
+                t("size_col"): f"{size:.2f}",
+                t("entry_price"): f"${avg_price:.3f}",
+                t("current_price"): f"${current_value / size:.3f}" if size > 0 else "—",
+                t("pnl_label"): pnl,
+            })
+
+        df = pd.DataFrame(rows)
+
+        pnl_col = t("pnl_label")
+
+        def _style_pnl(val):
+            if isinstance(val, (int, float)):
+                color = "#00c896" if val >= 0 else "#f87171"
+                return f"color: {color}; font-weight: 600"
+            return ""
+
+        df_display = df.copy()
+        df_display[pnl_col] = df_display[pnl_col].apply(
+            lambda v: f"+${v:.2f}" if isinstance(v, (int, float)) and v >= 0
+            else (f"-${abs(v):.2f}" if isinstance(v, (int, float)) else v)
+        )
+
+        st.dataframe(
+            df_display,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        total_pnl = sum(
+            float(pos.get("currentValue", 0)) - float(pos.get("initialValue", 0))
+            for pos in positions
+        )
+        pnl_color = "#00c896" if total_pnl >= 0 else "#f87171"
+        sign = "+" if total_pnl >= 0 else ""
+        st.markdown(
+            f'<div style="text-align:right;color:{pnl_color};font-size:14px;font-weight:700;">'
+            f'Total P&L: {sign}${total_pnl:.2f}</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.info(t("no_positions_found"))
+
+    st.markdown("---")
+
+    # ── Scan opportunities ────────────────────────────────────────────────────
     st.subheader(t("wallet_portfolio"))
 
     if not results:
@@ -243,7 +329,7 @@ def render_wallet_tab(t: "callable", address: str, results: list, bankroll: floa
         st.info(t("wallet_no_positions"))
         return
 
-    st.markdown(f"**{len(alerts)} active opportunities matched to wallet**")
+    st.markdown(f"**{len(alerts)}** {t('active_opportunities')}")
 
     for r in alerts[:5]:
         market = r.market

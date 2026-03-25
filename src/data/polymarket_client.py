@@ -244,6 +244,28 @@ class PolymarketClient:
         logger.info("Expanded to %d individual temperature markets", len(results))
         return results
 
+    def get_user_positions(self, address: str) -> list:
+        """
+        Fetch open positions for a wallet from Polymarket Data API.
+        Returns list of position dicts (empty list on error or no positions).
+
+        Each position dict includes:
+            conditionId, outcomeIndex (0=YES/1=NO), size (tokens),
+            avgPrice, currentValue, initialValue, title/question.
+        """
+        if not address:
+            return []
+        try:
+            data = self._get_with_retry(
+                "https://data-api.polymarket.com/positions",
+                {"user": address, "sizeThreshold": "0.01"},
+            )
+            if isinstance(data, list):
+                return data
+            return data.get("data", []) if isinstance(data, dict) else []
+        except PolymarketAPIError:
+            return []
+
     def get_clob_price(self, condition_id: str) -> Optional[float]:
         """
         Fetch live YES token mid-price from CLOB API.
