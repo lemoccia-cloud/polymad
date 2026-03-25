@@ -22,6 +22,7 @@ from src.analysis import edge_calculator
 from src.analysis.kelly import compute_position_size, kelly_summary
 from src.models.market import WeatherForecast, OpportunityResult
 from src.components.wallet import render_wallet_sidebar, render_wallet_tab
+from src.notifications import send_alert_email
 
 # ─── Page config ─────────────────────────────────────────────────────────────
 
@@ -919,11 +920,22 @@ def render_sidebar(th: dict):
             ))
             inject_autorefresh_js(refresh_interval, th)
 
+        # ── Notifications ────────────────────────────────────────────────────
+        _sb_section(t("sidebar_notifications"), th)
+        notify_enabled = st.toggle(t("notify_enable"), value=False, help=t("help_notify"))
+        notify_email = ""
+        if notify_enabled:
+            notify_email = st.text_input(
+                t("notify_email"),
+                placeholder="seu@email.com",
+                label_visibility="collapsed",
+            )
+
         # ── Wallet ───────────────────────────────────────────────────────────
         _sb_section(f"🦊 {t('wallet')}", th)
         wallet_address = render_wallet_sidebar(t)
 
-    return bankroll, edge_threshold, model, max_markets, cities_filter, run_btn, wallet_address
+    return bankroll, edge_threshold, model, max_markets, cities_filter, run_btn, wallet_address, notify_enabled, notify_email
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -937,7 +949,7 @@ def main():
     th = get_theme()
     inject_css(th)
 
-    bankroll, edge_threshold, model, max_markets, cities_filter, run_btn, wallet_address = render_sidebar(th)
+    bankroll, edge_threshold, model, max_markets, cities_filter, run_btn, wallet_address, notify_enabled, notify_email = render_sidebar(th)
 
     # ── Category bar ─────────────────────────────────────────────────────────
     render_category_bar(th)
@@ -953,6 +965,30 @@ def main():
             "bankroll": bankroll, "edge_threshold": edge_threshold,
             "last_run": datetime.now(tz=timezone.utc).strftime("%H:%M UTC"),
         })
+
+        # ── E-mail notifications ─────────────────────────────────────────────
+        if run_btn and notify_enabled and notify_email and "@" in notify_email:
+            email_alerts = [r for r in results if r.alert]
+            if email_alerts:
+                try:
+                    secrets = st.secrets
+                    lang = st.session_state.get("lang", "en")
+                    ok, err = send_alert_email(
+                        alerts=email_alerts,
+                        recipient=notify_email,
+                        smtp_user=secrets["SMTP_USER"],
+                        smtp_password=secrets["SMTP_PASSWORD"],
+                        smtp_from=secrets["SMTP_FROM"],
+                        edge_threshold=edge_threshold,
+                        bankroll=bankroll,
+                        lang=lang,
+                    )
+                    if ok:
+                        st.toast(t("notify_sent"), icon="✉️")
+                    else:
+                        st.toast(t("notify_error"), icon="⚠️")
+                except Exception:
+                    st.toast(t("notify_no_secrets"), icon="⚙️")
 
     results = st.session_state.get("results", [])
     bankroll_used = st.session_state.get("bankroll", bankroll)

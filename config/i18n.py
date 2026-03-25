@@ -120,6 +120,15 @@ TRANSLATIONS = {
         "diag_raw_markets": "Sub-markets expanded",
         "diag_parsed": "Parsed successfully",
         "diag_tip": "If 0 markets were parsed, the API may have no active temperature markets right now. Try again in a few minutes or increase Max Markets.",
+        # Notifications
+        "notifications": "Notifications",
+        "notify_enable": "E-mail alerts",
+        "notify_email": "Your e-mail",
+        "notify_sent": "Alert e-mail sent!",
+        "notify_error": "Failed to send alert e-mail",
+        "notify_no_secrets": "SMTP not configured — add credentials to secrets.toml",
+        "help_notify": "Receive an e-mail summary whenever opportunities with edge above the threshold are found.",
+        "sidebar_notifications": "Notifications",
     },
     "pt": {
         # Sidebar
@@ -239,6 +248,15 @@ TRANSLATIONS = {
         "diag_raw_markets": "Sub-mercados expandidos",
         "diag_parsed": "Parseados com sucesso",
         "diag_tip": "Se 0 mercados foram parseados, a API pode não ter mercados de temperatura ativos agora. Tente novamente em alguns minutos ou aumente Máx. Mercados.",
+        # Notifications
+        "notifications": "Notificações",
+        "notify_enable": "Alertas por e-mail",
+        "notify_email": "Seu e-mail",
+        "notify_sent": "E-mail de alerta enviado!",
+        "notify_error": "Falha ao enviar e-mail de alerta",
+        "notify_no_secrets": "SMTP não configurado — adicione credenciais ao secrets.toml",
+        "help_notify": "Receba um resumo por e-mail sempre que forem encontradas oportunidades com edge acima do limite.",
+        "sidebar_notifications": "Notificações",
     },
     "es": {
         # Sidebar
@@ -357,6 +375,15 @@ TRANSLATIONS = {
         "diag_raw_markets": "Sub-mercados expandidos",
         "diag_parsed": "Parseados con éxito",
         "diag_tip": "Si 0 mercados fueron parseados, la API puede no tener mercados de temperatura activos ahora. Inténtalo de nuevo en unos minutos.",
+        # Notifications
+        "notifications": "Notificaciones",
+        "notify_enable": "Alertas por e-mail",
+        "notify_email": "Tu e-mail",
+        "notify_sent": "¡E-mail de alerta enviado!",
+        "notify_error": "Error al enviar e-mail de alerta",
+        "notify_no_secrets": "SMTP no configurado — agrega credenciales al secrets.toml",
+        "help_notify": "Recibe un resumen por e-mail cuando se encuentren oportunidades con edge por encima del umbral.",
+        "sidebar_notifications": "Notificaciones",
     },
     "zh": {
         # Sidebar
@@ -475,6 +502,15 @@ TRANSLATIONS = {
         "diag_raw_markets": "展开的子市场",
         "diag_parsed": "成功解析",
         "diag_tip": "如果解析了0个市场，API可能暂无活跃的温度市场。请几分钟后重试或增加最大市场数。",
+        # Notifications
+        "notifications": "通知",
+        "notify_enable": "电子邮件警报",
+        "notify_email": "您的电子邮件",
+        "notify_sent": "警报邮件已发送！",
+        "notify_error": "发送警报邮件失败",
+        "notify_no_secrets": "SMTP 未配置 — 请在 secrets.toml 中添加凭据",
+        "help_notify": "当发现超过阈值的机会时，接收电子邮件摘要。",
+        "sidebar_notifications": "通知",
     },
 }
 
