@@ -16,14 +16,26 @@ import streamlit.components.v1 as components
 
 from config import settings
 from config.i18n import get_text, format_currency, format_pct, format_date, LANGUAGE_OPTIONS
-from src.data.polymarket_client import PolymarketClient, parse_weather_market, PolymarketAPIError
+from src.data.polymarket_client import (
+    PolymarketClient, parse_weather_market,
+    parse_crypto_market, parse_sports_market, parse_politics_market,
+    PolymarketAPIError,
+)
+from src.data.crypto_client import CryptoClient, CryptoAPIError
+from src.data.sports_client import SportsClient
+from src.data.politics_client import PoliticsClient
 from src.data.weather_client import WeatherClient, CityNotFoundError, WeatherAPIError
 from src.analysis import edge_calculator
 from src.analysis.kelly import compute_position_size, kelly_summary
 from src.models.market import WeatherForecast, OpportunityResult
 from src.components.wallet import render_wallet_sidebar, render_wallet_tab
+from src.components.filters import render_filter_bar
 from src.notifications import send_alert_email
-from src.data.supabase_client import save_scan, get_scan_history, build_alerts_summary
+from src.data.supabase_client import (
+    save_scan, get_scan_history, build_alerts_summary,
+    save_prediction, get_unresolved_predictions, mark_resolved, get_backtesting_data,
+    save_alert_history,
+)
 
 # ─── Page config ─────────────────────────────────────────────────────────────
 
@@ -276,9 +288,30 @@ def _usd(val: float) -> str:
 
 # ─── Cached data fetchers ────────────────────────────────────────────────────
 
+@st.cache_resource
+def _get_politics_client():
+    """Singleton PoliticsClient — preserves in-memory query cache across reruns."""
+    return PoliticsClient()
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_markets_cached(min_liquidity: float, max_days: int) -> list:
     return PolymarketClient().fetch_weather_markets(min_liquidity=min_liquidity, max_days=max_days)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_crypto_markets_cached(max_days: int) -> list:
+    return PolymarketClient().fetch_crypto_markets(max_days=max_days)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_sports_markets_cached(max_days: int) -> list:
+    return PolymarketClient().fetch_sports_markets(max_days=max_days)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_politics_markets_cached(max_days: int) -> list:
+    return PolymarketClient().fetch_politics_markets(max_days=max_days)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -305,8 +338,35 @@ def fetch_forecast_cached(
 
 # ─── Analysis pipeline ────────────────────────────────────────────────────────
 
+def _persist_prediction(result, supa_url: str, supa_key: str) -> None:
+    """Save one OpportunityResult to market_outcomes (best-effort, never raises)."""
+    if not supa_url or not supa_key:
+        return
+    try:
+        m = result.market
+        save_prediction(
+            supabase_url=supa_url,
+            anon_key=supa_key,
+            market_id=getattr(m, "market_id", "") or getattr(m, "condition_id", ""),
+            condition_id=getattr(m, "condition_id", ""),
+            question=getattr(m, "question", "")[:200],
+            market_type=getattr(m, "market_type", "weather"),
+            model_prob=result.forecast.model_probability,
+            market_prob=m.market_implied_prob,
+            edge=result.edge,
+            resolution_date=getattr(m, "resolution_date", None),
+        )
+    except Exception:
+        pass
+
+
 def run_analysis(bankroll, edge_threshold, model, max_markets, cities_filter):
     debug_info = {"raw_tuples": 0, "parsed": 0, "api_error": ""}
+    try:
+        supa_url = st.secrets.get("SUPABASE_URL", "")
+        supa_key = st.secrets.get("SUPABASE_ANON_KEY", "")
+    except Exception:
+        supa_url = supa_key = ""
 
     with st.spinner(t("loading")):
         try:
@@ -335,6 +395,9 @@ def run_analysis(bankroll, edge_threshold, model, max_markets, cities_filter):
         weather_markets.append(market)
 
     debug_info["parsed"] = len(weather_markets)
+    debug_info["parsed_crypto"] = 0
+    debug_info["parsed_sports"] = 0
+    debug_info["parsed_politics"] = 0
 
     if not weather_markets:
         return [], [], debug_info
@@ -370,8 +433,129 @@ def run_analysis(bankroll, edge_threshold, model, max_markets, cities_filter):
         result = edge_calculator.analyze_market(market, forecast)
         result.alert = result.edge > edge_threshold
         results.append(result)
+        _persist_prediction(result, supa_url, supa_key)
 
     prog.empty()
+
+    # ── Crypto pipeline ───────────────────────────────────────────────────────
+    try:
+        raw_crypto = fetch_crypto_markets_cached(max_days=settings.MAX_DAYS_TO_EXPIRY)
+    except PolymarketAPIError:
+        raw_crypto = []
+
+    if raw_crypto:
+        crypto_client = CryptoClient()
+        crypto_prog = st.progress(0, text="📈 Crypto…")
+        parsed_crypto = []
+        for tup in raw_crypto[:max_markets]:
+            raw_mkt, event_title, event_end = tup[0], tup[1], tup[2]
+            event_slug = tup[3] if len(tup) > 3 else ""
+            mkt = parse_crypto_market(
+                raw_mkt, event_title=event_title,
+                end_date_str=event_end, event_slug=event_slug,
+            )
+            if mkt is not None:
+                parsed_crypto.append(mkt)
+
+        for i, mkt in enumerate(parsed_crypto):
+            crypto_prog.progress((i + 1) / max(len(parsed_crypto), 1), text=f"📈 {mkt.asset}")
+            try:
+                forecast = crypto_client.get_lognormal_forecast(
+                    asset=mkt.asset,
+                    resolution_date=mkt.resolution_date,
+                    threshold_usd=mkt.threshold_usd,
+                    direction=mkt.direction,
+                )
+            except (CryptoAPIError, ValueError):
+                skipped.append(f"{mkt.asset}: forecast error")
+                continue
+            result = edge_calculator.analyze_market(mkt, forecast)
+            result.alert = result.edge > edge_threshold
+            results.append(result)
+            _persist_prediction(result, supa_url, supa_key)
+
+        debug_info["parsed_crypto"] = len(parsed_crypto)
+        crypto_prog.empty()
+
+    # ── Sports pipeline ───────────────────────────────────────────────────────
+    try:
+        raw_sports = fetch_sports_markets_cached(max_days=settings.MAX_DAYS_TO_EXPIRY)
+    except PolymarketAPIError:
+        raw_sports = []
+
+    if raw_sports:
+        sports_client = SportsClient()
+        sports_prog = st.progress(0, text="⚽ Sports…")
+        parsed_sports = []
+        for tup in raw_sports[:max_markets]:
+            raw_mkt, event_title, event_end = tup[0], tup[1], tup[2]
+            event_slug = tup[3] if len(tup) > 3 else ""
+            mkt = parse_sports_market(
+                raw_mkt, event_title=event_title,
+                end_date_str=event_end, event_slug=event_slug,
+            )
+            if mkt is not None:
+                parsed_sports.append(mkt)
+
+        for i, mkt in enumerate(parsed_sports):
+            sports_prog.progress((i + 1) / max(len(parsed_sports), 1),
+                                  text=f"⚽ {mkt.home_team} vs {mkt.away_team}")
+            forecast = sports_client.get_outcome_forecast(
+                home_team=mkt.home_team,
+                away_team=mkt.away_team,
+                sport=mkt.sport,
+                outcome=mkt.outcome,
+                resolution_date=mkt.resolution_date,
+            )
+            result = edge_calculator.analyze_market(mkt, forecast)
+            result.alert = result.edge > edge_threshold
+            results.append(result)
+            _persist_prediction(result, supa_url, supa_key)
+
+        debug_info["parsed_sports"] = len(parsed_sports)
+        sports_prog.empty()
+
+    # ── Politics pipeline ─────────────────────────────────────────────────────
+    try:
+        raw_politics = fetch_politics_markets_cached(max_days=settings.MAX_DAYS_TO_EXPIRY)
+    except PolymarketAPIError:
+        raw_politics = []
+
+    if raw_politics:
+        politics_client = _get_politics_client()
+        pol_prog = st.progress(0, text="🗳 Politics…")
+        parsed_politics = []
+        for tup in raw_politics[:max_markets]:
+            raw_mkt, event_title, event_end = tup[0], tup[1], tup[2]
+            event_slug = tup[3] if len(tup) > 3 else ""
+            mkt = parse_politics_market(
+                raw_mkt, event_title=event_title,
+                end_date_str=event_end, event_slug=event_slug,
+            )
+            if mkt is not None:
+                parsed_politics.append(mkt)
+
+        for i, mkt in enumerate(parsed_politics):
+            pol_prog.progress((i + 1) / max(len(parsed_politics), 1),
+                               text=f"🗳 {mkt.topic[:50]}")
+            forecast = politics_client.get_metaculus_forecast(
+                topic=mkt.topic,
+                resolution_date=mkt.resolution_date,
+            )
+            result = edge_calculator.analyze_market(mkt, forecast)
+            result.alert = result.edge > edge_threshold
+            results.append(result)
+            _persist_prediction(result, supa_url, supa_key)
+
+        debug_info["parsed_politics"] = len(parsed_politics)
+        pol_prog.empty()
+
+    debug_info["parsed"] = (
+        debug_info["parsed"]
+        + debug_info["parsed_crypto"]
+        + debug_info["parsed_sports"]
+        + debug_info["parsed_politics"]
+    )
     return results, skipped, debug_info
 
 
@@ -448,7 +632,17 @@ def make_ensemble_distribution(result: OpportunityResult, th: dict) -> go.Figure
 def make_edge_scatter(results: list, threshold_used: float, th: dict) -> go.Figure:
     edges = [r.edge * 100 for r in results]
     evs = [r.expected_value for r in results]
-    labels = [f"{r.market.city} {r.market.threshold_celsius:.0f}°C" for r in results]
+    def _scatter_label(m) -> str:
+        mtype = getattr(m, "market_type", "weather")
+        if mtype == "crypto":
+            d = "≥" if getattr(m, "direction", "") == "above" else "≤"
+            return f"{getattr(m, 'asset', '')} {d}${getattr(m, 'threshold_usd', 0):,.0f}"
+        if mtype == "sports":
+            return f"{getattr(m, 'home_team', '')} v {getattr(m, 'away_team', '')}"
+        if mtype == "politics":
+            return getattr(m, "topic", "")[:30]
+        return f"{getattr(m, 'city', '')} {getattr(m, 'threshold_celsius', 0):.0f}°C"
+    labels = [_scatter_label(r.market) for r in results]
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=edges, y=evs, mode="markers+text",
@@ -483,144 +677,206 @@ def make_edge_scatter(results: list, threshold_used: float, th: dict) -> go.Figu
 
 # ─── Alert card ──────────────────────────────────────────────────────────────
 
+def _prob_bar(pct: float, color: str, bg: str) -> str:
+    """Inline HTML horizontal progress bar — no Plotly iframe needed."""
+    w = max(2, min(100, round(pct)))
+    return (
+        f"<div style='flex:1; background:{bg}; border-radius:4px; height:8px; overflow:hidden;'>"
+        f"<div style='width:{w}%; background:{color}; height:8px; border-radius:4px;"
+        f" transition:width .3s ease;'></div></div>"
+    )
+
+
+def _kpi_cell(label: str, value: str, value_color: str, th: dict, border_left: str = "transparent") -> str:
+    """One KPI cell in the metrics strip."""
+    return (
+        f"<div style='flex:1; padding:10px 14px; border-left:1px solid {th['card_border']};"
+        f" min-width:80px;'>"
+        f"<div style='font-size:10px; font-weight:700; color:{th['text_muted']};"
+        f" text-transform:uppercase; letter-spacing:.06em; margin-bottom:4px;'>{label}</div>"
+        f"<div style='font-size:15px; font-weight:800; color:{value_color};"
+        f" white-space:nowrap;'>{value}</div>"
+        f"</div>"
+    )
+
+
 def render_alert_card(result: OpportunityResult, bankroll: float, th: dict) -> None:
     m, f = result.market, result.forecast
-    edge_pct = result.edge * 100
-    bet_usd = compute_position_size(bankroll, result.kelly_fraction)
-    ks = kelly_summary(result.kelly_fraction, bankroll)
-    bucket_sym = {"above": "≥", "below": "≤", "exact": "="}
-    sym = bucket_sym.get(m.bucket_type, "")
+    edge_pct    = result.edge * 100
+    bet_usd     = compute_position_size(bankroll, result.kelly_fraction)
+    ks          = kelly_summary(result.kelly_fraction, bankroll)
+    lang        = st.session_state.get("lang", "en")
+    mtype       = getattr(m, "market_type", "weather")
+    mkt_pct     = m.market_implied_prob * 100
+    mdl_pct     = f.model_probability * 100
+    gross_payout = bet_usd / m.market_implied_prob if m.market_implied_prob > 0 else 0
+    net_if_win  = gross_payout - bet_usd
+    ev_dollars  = bet_usd * result.expected_value
+    return_pct  = (1 / m.market_implied_prob - 1) * 100 if m.market_implied_prob > 0 else 0
+
     poly_url = (
-        f"https://polymarket.com/event/{m.event_slug}" if m.event_slug
+        f"https://polymarket.com/event/{m.event_slug}" if getattr(m, "event_slug", "")
         else "https://polymarket.com/markets"
     )
-    lang = st.session_state.get("lang", "en")
 
+    # ── Type dispatch ─────────────────────────────────────────────────────────
+    _TYPE_META = {
+        "crypto":   ("₿",  "#f59e0b", "CRYPTO"),
+        "sports":   ("⚽", "#10b981", "SPORTS"),
+        "politics": ("🗳", "#8b5cf6", "POLITICS"),
+        "weather":  ("🌡", "#3b82f6", "WEATHER"),
+    }
+    badge_icon, badge_color, badge_label = _TYPE_META.get(mtype, ("📊", th["accent"], mtype.upper()))
+
+    if mtype == "crypto":
+        title_text  = m.asset
+        detail_text = f"{'≥' if m.direction=='above' else '≤'} ${m.threshold_usd:,.0f}"
+        footer_parts = [
+            f"{t('card_spot')}: ${getattr(f,'spot_price',0):,.0f}",
+            f"{t('card_vol_annual')}: {getattr(f,'sigma_annual',0)*100:.0f}%",
+            f"{t('card_days_expiry')}: {getattr(f,'days_to_expiry','—')}d",
+            f"{t('liquidity')}: {_usd(m.liquidity_usd)}",
+        ]
+    elif mtype == "sports":
+        title_text  = m.home_team
+        detail_text = f"vs {m.away_team}"
+        src = getattr(f, "source", "—").replace("_", " ").title()
+        footer_parts = [
+            f"{t('card_elo_home')}: {getattr(f,'elo_home',0):.0f}",
+            f"{t('card_elo_away')}: {getattr(f,'elo_away',0):.0f}",
+            f"{t('card_source')}: {src}",
+            f"{t('liquidity')}: {_usd(m.liquidity_usd)}",
+        ]
+    elif mtype == "politics":
+        title_text  = m.topic[:44]
+        detail_text = ""
+        src = getattr(f, "source", "—").replace("_", " ").title()
+        met_ref = getattr(f, "metaculus_title", "") or (f"#{getattr(f,'metaculus_id','—')}" if getattr(f,"metaculus_id",None) else "baseline")
+        footer_parts = [
+            f"{t('card_source')}: {src}",
+            f"ref: {met_ref[:32]}",
+            f"{t('liquidity')}: {_usd(m.liquidity_usd)}",
+        ]
+    else:  # weather
+        bucket_sym  = {"above": "≥", "below": "≤", "exact": "="}
+        title_text  = m.city
+        detail_text = f"{bucket_sym.get(m.bucket_type,'')} {m.threshold_celsius:.0f}°C"
+        footer_parts = [
+            f"{t('card_forecast_model')}: {getattr(f,'forecast_model','—')}",
+            f"{t('members')}: {getattr(f,'ensemble_member_count','—')}",
+            f"{t('liquidity')}: {_usd(m.liquidity_usd)}",
+            f"{t('resolution')}: {m.end_date.strftime('%b %d %H:%MZ')}",
+        ]
+
+    footer_html = "  ·  ".join(footer_parts)
+
+    # ── Edge tier → border accent ─────────────────────────────────────────────
     if edge_pct > 20:
-        card_class = "alert-card top-edge"
-        badge_class = "badge-warn"
+        accent_border = th["positive"]
+        ev_color      = th["positive"]
     elif edge_pct > 10:
-        card_class = "alert-card high-edge"
-        badge_class = "badge-warn"
+        accent_border = th["warning"]
+        ev_color      = th["warning"]
     else:
-        card_class = "alert-card"
-        badge_class = "badge-pos"
+        accent_border = th["accent"]
+        ev_color      = th["accent"]
 
+    edge_color = th["positive"] if result.edge > 0 else th["negative"]
+
+    # ── Probability bars ──────────────────────────────────────────────────────
+    bar_bg     = th["bg"]
+    bar_market = th["accent"]
+    bar_model  = th["positive"] if result.edge > 0 else th["negative"]
+    prob_row = (
+        f"<div style='display:flex; align-items:center; gap:8px; margin:12px 0;'>"
+        f"<span style='font-size:11px; color:{th['text_muted']}; white-space:nowrap; min-width:52px;'>{t('market_prob')}</span>"
+        f"{_prob_bar(mkt_pct, bar_market, bar_bg)}"
+        f"<span style='font-size:12px; font-weight:700; color:{th['text_b']}; min-width:36px; text-align:right;'>{mkt_pct:.1f}%</span>"
+        f"<span style='font-size:11px; color:{th['text_muted']}; padding:0 4px;'>vs</span>"
+        f"<span style='font-size:11px; color:{th['text_muted']}; white-space:nowrap; min-width:44px;'>{t('model_prob')}</span>"
+        f"{_prob_bar(mdl_pct, bar_model, bar_bg)}"
+        f"<span style='font-size:12px; font-weight:700; color:{bar_model}; min-width:36px; text-align:right;'>{mdl_pct:.1f}%</span>"
+        f"</div>"
+    )
+
+    # ── KPI strip ─────────────────────────────────────────────────────────────
+    kpi_strip = (
+        f"<div style='display:flex; border-top:1px solid {th['card_border']};"
+        f" border-bottom:1px solid {th['card_border']}; margin:0 -18px; overflow:hidden;'>"
+        + _kpi_cell(t("edge"),            f"{edge_pct:+.1f}%",          edge_color,    th)
+        + _kpi_cell(t("ev_per_dollar"),   f"{result.expected_value:+.3f}", ev_color,   th)
+        + _kpi_cell(t("kelly_bet"),       _usd(bet_usd),                th["positive"], th)
+        + _kpi_cell(t("return_if_win"),   f"+{_usd(net_if_win)}",       th["positive"], th)
+        + _kpi_cell(t("return_pct"),      f"+{return_pct:.1f}%",        th["text_h"],  th)
+        + f"</div>"
+    )
+
+    # ── Full card (single st.markdown call) ───────────────────────────────────
     st.markdown(f"""
-    <div class="{card_class}">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:6px">
-        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap">
-          <span style="font-size:20px; font-weight:800; color:{th['text_h']}">{m.city}</span>
-          <span style="color:{th['text_muted']}; font-size:13px; background:{th['bg']};
-                       padding:2px 8px; border-radius:6px; border:1px solid {th['card_border']}">
+    <div style="
+        background:{th['card']}; border:1px solid {th['card_border']};
+        border-left:4px solid {accent_border};
+        border-radius:14px; padding:16px 18px 12px;
+        margin-bottom:16px; overflow:hidden;
+    ">
+      <!-- Row 1: type badge · title · detail · date · trade button -->
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap;">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; flex:1; min-width:0;">
+          <span style="font-size:10px; font-weight:700; padding:2px 8px; border-radius:20px;
+                       background:{badge_color}22; color:{badge_color};
+                       border:1px solid {badge_color}44; white-space:nowrap; flex-shrink:0;">
+            {badge_icon} {badge_label}
+          </span>
+          <span style="font-size:18px; font-weight:800; color:{th['text_h']};
+                       white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+            {title_text}
+          </span>
+          {"<span style='font-size:13px; font-weight:600; color:" + th['text_b'] + "; white-space:nowrap;'>" + detail_text + "</span>" if detail_text else ""}
+          <span style="font-size:11px; color:{th['text_muted']}; background:{th['bg']};
+                       padding:2px 8px; border-radius:6px; border:1px solid {th['card_border']};
+                       white-space:nowrap; flex-shrink:0;">
             {format_date(m.resolution_date, lang)}
           </span>
-          <span style="color:{th['text_b']}; font-size:14px; font-weight:600">
-            {sym} {m.threshold_celsius:.0f}°C
-          </span>
         </div>
-        <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap">
-          <span class="{badge_class}">{edge_pct:+.1f}% {t('edge')}</span>
-          <span class="badge-pos">EV {result.expected_value:+.3f}</span>
-        </div>
+        <a href="{poly_url}" target="_blank" style="
+            font-size:11px; font-weight:700; color:{badge_color};
+            background:{badge_color}15; border:1px solid {badge_color}44;
+            padding:4px 12px; border-radius:20px; text-decoration:none;
+            white-space:nowrap; flex-shrink:0;">
+          {t('trade_on_polymarket')} ↗
+        </a>
       </div>
-      <div style="color:{th['text_muted']}; font-size:12px; margin-bottom:12px;
-                  line-height:1.4; border-left:3px solid {th['card_border']};
-                  padding-left:10px">
+
+      <!-- Row 2: question text -->
+      <div style="font-size:12px; color:{th['text_muted']}; line-height:1.5;
+                  margin-top:8px; padding-left:4px;
+                  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
+                  overflow:hidden;">
         {m.question}
       </div>
-      <div class="trade-btn">
-        <a href="{poly_url}" target="_blank">{t('trade_on_polymarket')}</a>
+
+      <!-- Row 3: probability bars -->
+      {prob_row}
+
+      <!-- Row 4: KPI strip -->
+      {kpi_strip}
+
+      <!-- Row 5: model footer -->
+      <div style="font-size:11px; color:{th['text_muted']}; margin-top:10px;
+                  padding-top:8px; border-top:1px solid {th['card_border']}; line-height:1.6;">
+        {footer_html}
       </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Return calculations
-    gross_payout = bet_usd / m.market_implied_prob if m.market_implied_prob > 0 else 0
-    net_if_win   = gross_payout - bet_usd
-    ev_dollars   = bet_usd * result.expected_value
-    return_pct   = (1 / m.market_implied_prob - 1) * 100 if m.market_implied_prob > 0 else 0
-
-    col1, col2 = st.columns([3, 2])
-    with col1:
-        st.plotly_chart(
-            make_probability_comparison(result, th),
-            use_container_width=True, config={"displayModeBar": False},
-            key=f"prob_{m.condition_id}",
-        )
-    with col2:
-        st.markdown(f"""
-        <div class="kelly-panel">
-          <div style="color:{th['text_muted']}; font-size:11px; font-weight:600;
-                      text-transform:uppercase; letter-spacing:0.06em; margin-bottom:6px">
-            {t('kelly_bet')}
-          </div>
-          <div style="color:{th['positive']}; font-size:26px; font-weight:800;
-                      line-height:1.1; margin-bottom:2px">
-            {_usd(bet_usd)}
-          </div>
-          <div style="color:{th['text_muted']}; font-size:11px; margin-bottom:8px">
-            {ks['capped_kelly']*100:.1f}% {t('of_bankroll')} · {t('quarter_kelly')}
-          </div>
-          <div style="background:{th['bg']}; border:1px solid {th['card_border']};
-                      border-radius:8px; padding:8px 10px; margin-bottom:10px;
-                      display:grid; gap:4px;">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-              <span style="color:{th['text_muted']}; font-size:11px;">{t('return_if_win')}</span>
-              <span style="color:{th['positive']}; font-weight:700; font-size:14px;">
-                +{_usd(net_if_win)}
-              </span>
-            </div>
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-              <span style="color:{th['text_muted']}; font-size:11px;">{t('return_pct')}</span>
-              <span style="color:{th['positive']}; font-weight:600; font-size:12px;">
-                +{return_pct:.1f}%
-              </span>
-            </div>
-            <div style="display:flex; justify-content:space-between; align-items:center;
-                        border-top:1px dashed {th['card_border']}; padding-top:4px; margin-top:2px;">
-              <span style="color:{th['text_muted']}; font-size:11px;">{t('expected_profit')}</span>
-              <span style="color:{'#059669' if ev_dollars >= 0 else th['negative']}; font-size:12px; font-weight:600;">
-                {'+' if ev_dollars >= 0 else ''}{_usd(ev_dollars)}
-              </span>
-            </div>
-          </div>
-          <div style="border-top:1px solid {th['card_border']}; padding-top:10px;
-                      display:grid; gap:6px">
-            <div style="display:flex; justify-content:space-between">
-              <span style="color:{th['text_muted']}">{t('market_prob')}</span>
-              <span style="color:{th['text_h']}; font-weight:600">
-                {m.market_implied_prob*100:.1f}%
-              </span>
-            </div>
-            <div style="display:flex; justify-content:space-between">
-              <span style="color:{th['text_muted']}">{t('model_prob')}</span>
-              <span style="color:{th['positive']}; font-weight:600">
-                {f.model_probability*100:.1f}%
-              </span>
-            </div>
-            <div style="display:flex; justify-content:space-between">
-              <span style="color:{th['text_muted']}">{t('liquidity')}</span>
-              <span style="color:{th['text_h']}">{_usd(m.liquidity_usd)}</span>
-            </div>
-            <div style="display:flex; justify-content:space-between">
-              <span style="color:{th['text_muted']}">{t('members')}</span>
-              <span style="color:{th['text_h']}">{f.ensemble_member_count}</span>
-            </div>
-            <div style="display:flex; justify-content:space-between">
-              <span style="color:{th['text_muted']}">{t('resolution')}</span>
-              <span style="color:{th['text_h']}">{m.end_date.strftime('%b %d %H:%MZ')}</span>
-            </div>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with st.expander(f"📊 {t('ensemble_dist')} — {m.city} {format_date(m.resolution_date, lang)}"):
-        st.plotly_chart(
-            make_ensemble_distribution(result, th),
-            use_container_width=True, config={"displayModeBar": False},
-            key=f"dist_{m.condition_id}",
-        )
+    # ── Ensemble expander — weather only, unchanged ───────────────────────────
+    if mtype == "weather":
+        with st.expander(f"📊 {t('ensemble_dist')} — {getattr(m, 'city', '')} {format_date(m.resolution_date, lang)}"):
+            st.plotly_chart(
+                make_ensemble_distribution(result, th),
+                use_container_width=True, config={"displayModeBar": False},
+                key=f"dist_{m.condition_id}",
+            )
 
 
 # ─── Full results table ───────────────────────────────────────────────────────
@@ -631,14 +887,29 @@ def render_full_table(results: list, bankroll: float, th: dict) -> None:
     rows = []
     for r in results:
         m, f = r.market, r.forecast
+        mtype = getattr(m, "market_type", "weather")
         bet = compute_position_size(bankroll, r.kelly_fraction)
         ret_pct = (1 / m.market_implied_prob - 1) * 100 if m.market_implied_prob > 0 else 0
         net_win  = bet * ret_pct / 100
+
+        if mtype == "crypto":
+            label = f"{m.asset} {'≥' if m.direction=='above' else '≤'} ${m.threshold_usd:,.0f}"
+            members_val = "—"
+        elif mtype == "sports":
+            label = f"{m.home_team} vs {m.away_team}"
+            members_val = "—"
+        elif mtype == "politics":
+            label = m.topic[:40]
+            members_val = "—"
+        else:  # weather
+            label = f"{m.city} {bucket_label.get(m.bucket_type,'')}{m.threshold_celsius:.0f}°C"
+            members_val = str(getattr(f, "ensemble_member_count", "—"))
+
         rows.append({
             "": "🚨" if r.alert else "·",
-            t("city"): m.city,
+            t("city"): label,
             t("date"): format_date(m.resolution_date, lang),
-            t("threshold"): f"{bucket_label.get(m.bucket_type,'')}{m.threshold_celsius:.0f}°C",
+            t("threshold"): mtype.upper(),
             t("mkt_pct"): round(m.market_implied_prob * 100, 1),
             t("model_pct"): round(f.model_probability * 100, 1),
             t("edge_pct"): round(r.edge * 100, 1),
@@ -647,7 +918,7 @@ def render_full_table(results: list, bankroll: float, th: dict) -> None:
             t("return_pct"): round(ret_pct, 1),
             t("return_if_win"): round(net_win, 2),
             t("kelly_fraction"): round(r.suggested_bet_fraction * 100, 1),
-            t("members"): f.ensemble_member_count,
+            t("members"): members_val,
             t("liquidity"): f"${m.liquidity_usd:,.0f}",
         })
 
@@ -661,7 +932,7 @@ def render_full_table(results: list, bankroll: float, th: dict) -> None:
             return f"color: {th['warning']}; font-weight: 600"
         return f"color: {th['negative']}"
 
-    styled = df.style.applymap(color_edge, subset=[edge_col])
+    styled = df.style.map(color_edge, subset=[edge_col])
     st.dataframe(styled, use_container_width=True, hide_index=True, height=420)
 
 
@@ -702,66 +973,37 @@ def inject_autorefresh_js(interval_minutes: int, th: dict) -> None:
 
 def render_category_bar(th: dict) -> str:
     """
-    Horizontal category selector. Only 'weather' is active; others are
-    visually disabled with an 'Em breve' badge.
-    Returns the selected category key (always 'weather' for now).
+    Horizontal category selector using st.radio.
+    Returns the selected category key ('all', 'weather', 'crypto', 'sports', 'politics').
     """
-    cats = [
-        ("weather",  t("cat_weather"),  True),
-        ("politics", t("cat_politics"), False),
-        ("sports",   t("cat_sports"),   False),
-        ("finance",  t("cat_finance"),  False),
-        ("other",    t("cat_other"),    False),
-    ]
-    coming_soon = t("cat_coming_soon")
-    active = st.session_state.get("category", "weather")
+    cats_keys   = ["all", "weather", "crypto", "sports", "politics"]
+    cats_labels = [t(f"cat_{k}") for k in cats_keys]
 
-    buttons_html = ""
-    for key, label, enabled in cats:
-        is_active = enabled and key == active
-        if is_active:
-            style = (
-                f"background:{th['accent']}; color:#ffffff; border:none;"
-                f" padding:7px 18px; border-radius:20px; font-size:13px;"
-                f" font-weight:700; cursor:pointer; white-space:nowrap;"
-            )
-        elif enabled:
-            style = (
-                f"background:{th['card']}; color:{th['text_b']};"
-                f" border:1px solid {th['card_border']};"
-                f" padding:7px 18px; border-radius:20px; font-size:13px;"
-                f" font-weight:500; cursor:pointer; white-space:nowrap;"
-            )
-        else:
-            style = (
-                f"background:{th['card']}; color:{th['text_muted']};"
-                f" border:1px solid {th['card_border']};"
-                f" padding:7px 18px; border-radius:20px; font-size:13px;"
-                f" font-weight:400; cursor:not-allowed; white-space:nowrap;"
-                f" opacity:0.5; position:relative;"
-            )
-        badge = (
-            f"<span style='font-size:9px; background:{th['warning']}; color:#fff;"
-            f" border-radius:8px; padding:1px 6px; margin-left:6px;"
-            f" font-weight:700; vertical-align:middle;'>{coming_soon}</span>"
-            if not enabled else ""
-        )
-        buttons_html += (
-            f"<div style='{style}'>{label}{badge}</div>"
-        )
+    if "category" not in st.session_state:
+        st.session_state["category"] = "all"
+
+    current = st.session_state.get("category", "all")
+    try:
+        idx = cats_keys.index(current)
+    except ValueError:
+        idx = 0
 
     st.markdown(
-        f"""
-        <div style="
-            display:flex; gap:8px; flex-wrap:wrap; align-items:center;
-            padding:14px 4px 10px;
-            border-bottom:1px solid {th['card_border']};
-            margin-bottom:20px;
-        ">{buttons_html}</div>
-        """,
+        f"<div style='padding:6px 0 2px; border-bottom:1px solid {th['card_border']};"
+        f" margin-bottom:20px;'></div>",
         unsafe_allow_html=True,
     )
-    return active
+    chosen_label = st.radio(
+        label="",
+        options=cats_labels,
+        index=idx,
+        horizontal=True,
+        key="category_radio",
+        label_visibility="collapsed",
+    )
+    selected = cats_keys[cats_labels.index(chosen_label)]
+    st.session_state["category"] = selected
+    return selected
 
 
 # ─── Header banner ────────────────────────────────────────────────────────────
@@ -942,6 +1184,239 @@ def render_sidebar(th: dict):
     return bankroll, edge_threshold, model, max_markets, cities_filter, run_btn, wallet_address, notify_enabled, notify_email
 
 
+# ─── Backtesting helpers ──────────────────────────────────────────────────────
+
+def _compute_calibration(data: list) -> tuple:
+    """
+    Given a list of dicts {model_prob, resolved_yes}, return:
+      (bucket_mids, actual_rates, bucket_counts)
+    using 10-percentage-point buckets [0,10), [10,20) … [90,100].
+    """
+    buckets: dict = {i: {"total": 0, "yes": 0} for i in range(10)}
+    for row in data:
+        p = float(row.get("model_prob") or 0)
+        outcome = row.get("resolved_yes")
+        if outcome is None:
+            continue
+        bucket = min(int(p * 10), 9)
+        buckets[bucket]["total"] += 1
+        if outcome:
+            buckets[bucket]["yes"] += 1
+
+    mids, rates, counts = [], [], []
+    for i in range(10):
+        n = buckets[i]["total"]
+        if n == 0:
+            continue
+        mids.append(i * 10 + 5)
+        rates.append(buckets[i]["yes"] / n * 100)
+        counts.append(n)
+    return mids, rates, counts
+
+
+def _brier_score(data: list) -> float:
+    total, s = 0, 0.0
+    for row in data:
+        p = float(row.get("model_prob") or 0)
+        outcome = row.get("resolved_yes")
+        if outcome is None:
+            continue
+        s += (p - (1.0 if outcome else 0.0)) ** 2
+        total += 1
+    return round(s / total, 4) if total else 0.0
+
+
+def _accuracy(data: list) -> float:
+    total, correct = 0, 0
+    for row in data:
+        p = float(row.get("model_prob") or 0)
+        outcome = row.get("resolved_yes")
+        if outcome is None:
+            continue
+        predicted_yes = p >= 0.5
+        if predicted_yes == bool(outcome):
+            correct += 1
+        total += 1
+    return round(correct / total, 4) if total else 0.0
+
+
+def make_calibration_chart(data: list, th: dict) -> go.Figure:
+    mids, rates, counts = _compute_calibration(data)
+    fig = go.Figure()
+    # perfect calibration diagonal
+    fig.add_trace(go.Scatter(
+        x=[0, 100], y=[0, 100],
+        mode="lines",
+        line=dict(color=th["text_muted"], dash="dash", width=1),
+        name=t("backtest_calibration_ideal"),
+    ))
+    # actual calibration points
+    fig.add_trace(go.Scatter(
+        x=mids, y=rates,
+        mode="lines+markers",
+        marker=dict(size=[max(6, min(20, c // 2 + 6)) for c in counts],
+                    color=th["accent"], line=dict(color="white", width=1)),
+        line=dict(color=th["accent"], width=2),
+        name=t("model_prob"),
+        text=[f"n={c}" for c in counts],
+        hovertemplate="%{x:.0f}% model → %{y:.1f}% actual (%{text})<extra></extra>",
+    ))
+    fig.update_layout(
+        height=320,
+        margin=dict(l=0, r=0, t=24, b=0),
+        paper_bgcolor=th["plot_paper"], plot_bgcolor=th["plot_bg"],
+        xaxis=dict(title=t("backtest_calibration_x"), range=[0, 100],
+                   color=th["plot_text"], gridcolor=th["plot_grid"]),
+        yaxis=dict(title=t("backtest_calibration_y"), range=[0, 100],
+                   color=th["plot_text"], gridcolor=th["plot_grid"]),
+        legend=dict(font=dict(color=th["plot_text"], size=11)),
+        font=dict(color=th["plot_text"]),
+    )
+    return fig
+
+
+def make_accuracy_by_type_chart(data: list, th: dict) -> go.Figure:
+    from collections import defaultdict
+    counts: dict = defaultdict(lambda: {"total": 0, "correct": 0})
+    for row in data:
+        mtype = row.get("market_type", "weather")
+        p = float(row.get("model_prob") or 0)
+        outcome = row.get("resolved_yes")
+        if outcome is None:
+            continue
+        counts[mtype]["total"] += 1
+        if (p >= 0.5) == bool(outcome):
+            counts[mtype]["correct"] += 1
+
+    types, accs, ns = [], [], []
+    for mtype, v in sorted(counts.items()):
+        if v["total"] == 0:
+            continue
+        types.append(mtype.capitalize())
+        accs.append(round(v["correct"] / v["total"] * 100, 1))
+        ns.append(v["total"])
+
+    fig = go.Figure(go.Bar(
+        x=types, y=accs,
+        text=[f"{a}% (n={n})" for a, n in zip(accs, ns)],
+        textposition="outside",
+        marker_color=th["accent"],
+    ))
+    fig.add_hline(y=50, line_dash="dash", line_color=th["text_muted"],
+                  annotation_text="50% baseline", annotation_font_color=th["text_muted"])
+    fig.update_layout(
+        height=280,
+        margin=dict(l=0, r=0, t=24, b=0),
+        paper_bgcolor=th["plot_paper"], plot_bgcolor=th["plot_bg"],
+        yaxis=dict(range=[0, 110], color=th["plot_text"], gridcolor=th["plot_grid"]),
+        xaxis=dict(color=th["plot_text"]),
+        font=dict(color=th["plot_text"]),
+        showlegend=False,
+    )
+    return fig
+
+
+def check_and_update_resolutions(poly_client, supa_url: str, supa_key: str) -> int:
+    """
+    Fetch unresolved predictions from Supabase, check each against Polymarket CLOB,
+    and mark resolved ones. Returns the count of newly resolved predictions.
+    """
+    if not supa_url or not supa_key:
+        return 0
+    unresolved = get_unresolved_predictions(supa_url, supa_key, limit=50)
+    updated = 0
+    for row in unresolved:
+        cid = row.get("condition_id", "")
+        if not cid:
+            continue
+        outcome = poly_client.fetch_market_outcome(cid)
+        if outcome is not None:
+            mark_resolved(supa_url, supa_key, row["id"], outcome)
+            updated += 1
+    return updated
+
+
+def render_backtesting_tab(th: dict, poly_client) -> None:
+    """Render the Backtesting tab: calibration curve + Brier score + resolved table."""
+    try:
+        supa_url = st.secrets.get("SUPABASE_URL", "")
+        supa_key = st.secrets.get("SUPABASE_ANON_KEY", "")
+    except Exception:
+        supa_url = supa_key = ""
+
+    if not supa_url or not supa_key:
+        st.info(t("backtest_no_supabase"))
+        return
+
+    # ── Check for newly resolved markets ─────────────────────────────────────
+    with st.spinner(t("backtest_checking")):
+        updated = check_and_update_resolutions(poly_client, supa_url, supa_key)
+    if updated:
+        st.toast(f"🎯 {updated} {t('backtest_updated')}", icon="🎯")
+
+    # ── Load resolved data ────────────────────────────────────────────────────
+    data = get_backtesting_data(supa_url, supa_key, limit=500)
+    resolved = [r for r in data if r.get("resolved_yes") is not None]
+
+    if not resolved:
+        st.info(t("backtest_no_data"))
+        return
+
+    # ── Top metrics ──────────────────────────────────────────────────────────
+    brier  = _brier_score(resolved)
+    acc    = _accuracy(resolved)
+    col1, col2, col3 = st.columns(3)
+    col1.metric(t("backtest_total"), len(resolved))
+    col2.metric(
+        t("backtest_brier"),
+        f"{brier:.4f}",
+        help=t("backtest_brier_help"),
+    )
+    col3.metric(
+        t("backtest_accuracy"),
+        f"{acc*100:.1f}%",
+        help=t("backtest_accuracy_help"),
+    )
+
+    st.markdown(f"<div style='height:8px'></div>", unsafe_allow_html=True)
+
+    # ── Charts ────────────────────────────────────────────────────────────────
+    ch_cal, ch_type = st.columns([3, 2])
+    with ch_cal:
+        st.markdown(f"**{t('backtest_title')}**")
+        st.plotly_chart(
+            make_calibration_chart(resolved, th),
+            use_container_width=True, config={"displayModeBar": False},
+            key="backtest_calibration",
+        )
+    with ch_type:
+        st.markdown(f"**{t('backtest_by_type')}**")
+        st.plotly_chart(
+            make_accuracy_by_type_chart(resolved, th),
+            use_container_width=True, config={"displayModeBar": False},
+            key="backtest_by_type_chart",
+        )
+
+    # ── Resolved predictions table ────────────────────────────────────────────
+    st.markdown(f"**{t('backtest_table_title')}**")
+    rows = []
+    for row in resolved[:200]:
+        rows.append({
+            t("backtest_col_type"):     row.get("market_type", "—").capitalize(),
+            t("backtest_col_question"): (row.get("question") or "")[:60],
+            t("backtest_col_model"):    f"{float(row.get('model_prob', 0))*100:.1f}%",
+            t("backtest_col_market"):   f"{float(row.get('market_prob', 0))*100:.1f}%",
+            t("backtest_col_edge"):     f"{float(row.get('edge', 0))*100:+.1f}%",
+            t("backtest_col_result"):   (
+                t("backtest_result_yes") if row["resolved_yes"]
+                else t("backtest_result_no")
+            ),
+            t("backtest_col_date"):     str(row.get("resolution_date", ""))[:10],
+        })
+    if rows:
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def render_history_tab(t: "callable", th: dict, wallet_address: str) -> None:
@@ -1022,22 +1497,41 @@ def render_history_tab(t: "callable", th: dict, wallet_address: str) -> None:
             date_str = "—"
 
         alerts_summary = row.get("alerts_summary") or []
-        top_city = alerts_summary[0]["city"] if alerts_summary else "—"
+        top_label = (
+            alerts_summary[0].get("label") or alerts_summary[0].get("city", "—")
+            if alerts_summary else "—"
+        )
 
         table_rows.append({
             t("scan_date_col"): date_str,
             t("total_alerts_col"): row.get("alert_count", 0),
             t("markets_label"): row.get("total_markets", 0),
-            "Top City": top_city,
+            "Top Alert": top_label,
         })
 
     if table_rows:
         st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
 
 
+def _detect_browser_lang() -> str:
+    """Infer language from the browser's Accept-Language header."""
+    try:
+        accept = st.context.headers.get("Accept-Language", "")
+        primary = accept.split(",")[0].split(";")[0].lower().strip()
+        if primary.startswith("pt"):
+            return "pt"
+        if primary.startswith("es"):
+            return "es"
+        if primary.startswith("zh"):
+            return "zh"
+    except Exception:
+        pass
+    return "en"
+
+
 def main():
     if "lang" not in st.session_state:
-        st.session_state["lang"] = "en"
+        st.session_state["lang"] = _detect_browser_lang()
     if "theme" not in st.session_state:
         st.session_state["theme"] = "light"
 
@@ -1047,7 +1541,7 @@ def main():
     bankroll, edge_threshold, model, max_markets, cities_filter, run_btn, wallet_address, notify_enabled, notify_email = render_sidebar(th)
 
     # ── Category bar ─────────────────────────────────────────────────────────
-    render_category_bar(th)
+    selected_category = render_category_bar(th)
 
     # ── Run / load state ────────────────────────────────────────────────────
     # Cache a PolymarketClient for the wallet tab (positions fetch)
@@ -1082,6 +1576,11 @@ def main():
                     )
                     if saved:
                         st.toast(t("scan_saved"), icon="💾")
+                    # ── Save alert history for connected wallet ──────────────
+                    if wallet_address and wallet_address != "anonymous":
+                        alerts_to_save = [r for r in results if r.alert]
+                        if alerts_to_save:
+                            save_alert_history(supa_url, supa_key, wallet_address, alerts_to_save)
             except Exception:
                 pass  # Supabase is optional — never block the app
 
@@ -1135,6 +1634,14 @@ def main():
             for s in skipped[:15]:
                 st.caption(f"· {s}")
 
+    # ── Category filter ───────────────────────────────────────────────────────
+    if selected_category and selected_category != "all":
+        results = [r for r in results
+                   if getattr(r.market, "market_type", "weather") == selected_category]
+
+    # ── Filter bar + CSV export ───────────────────────────────────────────────
+    results, _ = render_filter_bar(th, results, bankroll_used)
+
     alerts = [r for r in results if r.alert]
     ranked = edge_calculator.rank_opportunities(results, by="expected_value")
 
@@ -1143,9 +1650,9 @@ def main():
     today_date = now_utc.date()
     week_end = today_date + timedelta(days=7)
 
-    tab_alerts, tab_today, tab_week, tab_all, tab_wallet, tab_history = st.tabs([
+    tab_alerts, tab_today, tab_week, tab_all, tab_wallet, tab_history, tab_backtest = st.tabs([
         t("tab_alerts"), t("tab_today"), t("tab_week"), t("tab_all"),
-        t("tab_wallet"), t("tab_history"),
+        t("tab_wallet"), t("tab_history"), t("tab_backtest"),
     ])
 
     # ── Tab: Alerts ───────────────────────────────────────────────────────────
@@ -1228,6 +1735,10 @@ def main():
     # ── Tab: Histórico ────────────────────────────────────────────────────────
     with tab_history:
         render_history_tab(t, th, wallet_address)
+
+    # ── Tab: Backtesting ──────────────────────────────────────────────────────
+    with tab_backtest:
+        render_backtesting_tab(th, poly_client=st.session_state.get("_poly_client"))
 
 
 if __name__ == "__main__":

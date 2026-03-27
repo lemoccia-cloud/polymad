@@ -1,8 +1,17 @@
 """MetaMask wallet connection component for polyMad Streamlit dashboard."""
 import json
 import logging
+from collections import defaultdict
+
+import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+
+from src.data.supabase_client import (
+    get_alert_config,
+    upsert_alert_config,
+    get_alert_history,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +210,13 @@ def render_wallet_tab(
         render_metamask_button(connect_label=t("connect_wallet"))
         return
 
+    # Read Supabase secrets (optional — graceful if not configured)
+    try:
+        supa_url = st.secrets.get("SUPABASE_URL", "")
+        supa_key = st.secrets.get("SUPABASE_ANON_KEY", "")
+    except Exception:
+        supa_url = supa_key = ""
+
     short = address[:6] + "..." + address[-4:]
 
     # ── Header cards ─────────────────────────────────────────────────────────
@@ -250,9 +266,23 @@ def render_wallet_tab(
         positions = []
 
     if positions:
-        import pandas as pd
+        # Aggregate portfolio totals
+        total_current = sum(float(p.get("currentValue", 0)) for p in positions)
+        total_initial = sum(float(p.get("initialValue", 0)) for p in positions)
+        total_pnl = total_current - total_initial
+        total_pnl_pct = (total_pnl / total_initial * 100) if total_initial > 0 else 0.0
 
-        # Build condition_id → WeatherMarket lookup from current scan results
+        # Summary metric strip
+        mc1, mc2, mc3 = st.columns(3)
+        mc1.metric(t("portfolio_value"), f"${total_current:,.2f}")
+        pnl_sign = "+" if total_pnl >= 0 else ""
+        mc2.metric(t("total_pnl"), f"{pnl_sign}${total_pnl:.2f}")
+        ret_sign = "+" if total_pnl_pct >= 0 else ""
+        mc3.metric(t("pnl_return_pct"), f"{ret_sign}{total_pnl_pct:.1f}%")
+
+        st.markdown("")
+
+        # Build condition_id → market lookup from current scan results
         market_by_condition = {r.market.condition_id: r.market for r in results} if results else {}
 
         rows = []
@@ -265,10 +295,13 @@ def render_wallet_tab(
             current_value = float(pos.get("currentValue", 0))
             initial_value = float(pos.get("initialValue", 0))
             pnl = current_value - initial_value
+            pnl_pct = (pnl / initial_value * 100) if initial_value > 0 else 0.0
 
-            # Use matched market title if available, else fallback to API title
             mkt = market_by_condition.get(cid)
             title = (mkt.question[:60] + "...") if mkt else pos.get("title", cid[:20])
+
+            pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
+            ret_str = f"+{pnl_pct:.1f}%" if pnl_pct >= 0 else f"{pnl_pct:.1f}%"
 
             rows.append({
                 t("market_col"): title,
@@ -276,42 +309,11 @@ def render_wallet_tab(
                 t("size_col"): f"{size:.2f}",
                 t("entry_price"): f"${avg_price:.3f}",
                 t("current_price"): f"${current_value / size:.3f}" if size > 0 else "—",
-                t("pnl_label"): pnl,
+                t("pnl_label"): pnl_str,
+                t("pnl_return_pct"): ret_str,
             })
 
-        df = pd.DataFrame(rows)
-
-        pnl_col = t("pnl_label")
-
-        def _style_pnl(val):
-            if isinstance(val, (int, float)):
-                color = "#00c896" if val >= 0 else "#f87171"
-                return f"color: {color}; font-weight: 600"
-            return ""
-
-        df_display = df.copy()
-        df_display[pnl_col] = df_display[pnl_col].apply(
-            lambda v: f"+${v:.2f}" if isinstance(v, (int, float)) and v >= 0
-            else (f"-${abs(v):.2f}" if isinstance(v, (int, float)) else v)
-        )
-
-        st.dataframe(
-            df_display,
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        total_pnl = sum(
-            float(pos.get("currentValue", 0)) - float(pos.get("initialValue", 0))
-            for pos in positions
-        )
-        pnl_color = "#00c896" if total_pnl >= 0 else "#f87171"
-        sign = "+" if total_pnl >= 0 else ""
-        st.markdown(
-            f'<div style="text-align:right;color:{pnl_color};font-size:14px;font-weight:700;">'
-            f'Total P&L: {sign}${total_pnl:.2f}</div>',
-            unsafe_allow_html=True,
-        )
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     else:
         st.info(t("no_positions_found"))
 
@@ -322,50 +324,144 @@ def render_wallet_tab(
 
     if not results:
         st.info(t("run_first"))
-        return
+    else:
+        alerts = [r for r in results if r.alert]
+        if not alerts:
+            st.info(t("wallet_no_positions"))
+        else:
+            st.markdown(f"**{len(alerts)}** {t('active_opportunities')}")
+            for r in alerts[:5]:
+                market = r.market
+                bet = bankroll * r.suggested_bet_fraction
+                poly_url = (
+                    f"https://polymarket.com/event/{market.event_slug}"
+                    if getattr(market, "event_slug", None)
+                    else "https://polymarket.com"
+                )
+                res_label = ""
+                if hasattr(market, "resolution_date") and market.resolution_date:
+                    res_label = market.resolution_date.strftime("%b %d")
+                mtype = getattr(market, "market_type", "weather")
+                type_badge = {"crypto": "₿", "sports": "⚽", "politics": "🗳️"}.get(mtype, "🌡")
+                st.markdown(
+                    f"""
+                    <div style="
+                        background:#1e2530;border:1px solid #2d3748;
+                        border-radius:10px;padding:14px;margin:8px 0;
+                    ">
+                        <div style="color:#ddd;font-size:13px;font-weight:600;">
+                            {type_badge} {getattr(market, 'city', getattr(market, 'asset', getattr(market, 'topic', ''))[:30])}
+                            {f"· {res_label}" if res_label else ""}
+                        </div>
+                        <div style="color:#888;font-size:11px;margin:4px 0;">{market.question[:70]}...</div>
+                        <div style="display:flex;gap:20px;margin-top:8px;">
+                            <span style="color:#00c896;">Edge: {r.edge*100:+.1f}%</span>
+                            <span style="color:#60a5fa;">EV: {r.expected_value:+.2f}</span>
+                            <span style="color:#f59e0b;">Bet: ${bet:.2f}</span>
+                        </div>
+                        <a href="{poly_url}" target="_blank" style="
+                            display:inline-block;margin-top:8px;background:#3b82f6;
+                            color:white;padding:4px 12px;border-radius:6px;
+                            text-decoration:none;font-size:12px;
+                        ">{t('trade_on_polymarket')}</a>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-    alerts = [r for r in results if r.alert]
-    if not alerts:
-        st.info(t("wallet_no_positions"))
-        return
+    st.markdown("---")
 
-    st.markdown(f"**{len(alerts)}** {t('active_opportunities')}")
+    # ── Alert configuration ───────────────────────────────────────────────────
+    with st.expander(t("alert_config_title"), expanded=False):
+        if supa_url and supa_key:
+            cfg = get_alert_config(supa_url, supa_key, address)
+        else:
+            cfg = {}
 
-    for r in alerts[:5]:
-        market = r.market
-        bet = bankroll * r.suggested_bet_fraction
-        poly_url = (
-            f"https://polymarket.com/event/{market.event_slug}"
-            if market.event_slug
-            else "https://polymarket.com"
+        saved_edge = int(float(cfg.get("edge_threshold", 0.05)) * 100)
+        saved_cats = cfg.get("categories") or ["weather", "crypto", "sports", "politics"]
+        saved_email = cfg.get("notify_email") or ""
+
+        new_edge = st.slider(t("alert_edge_threshold"), 1, 30, value=saved_edge, step=1) / 100.0
+        new_cats = st.multiselect(
+            t("alert_categories"),
+            options=["weather", "crypto", "sports", "politics"],
+            default=saved_cats,
         )
-        st.markdown(
-            f"""
-            <div style="
-                background:#1e2530;
-                border:1px solid #2d3748;
-                border-radius:10px;
-                padding:14px;
-                margin:8px 0;
-            ">
-                <div style="color:#ddd;font-size:13px;font-weight:600;">{market.city} · {market.resolution_date.strftime('%b %d')}</div>
-                <div style="color:#888;font-size:11px;margin:4px 0;">{market.question[:70]}...</div>
-                <div style="display:flex;gap:20px;margin-top:8px;">
-                    <span style="color:#00c896;">Edge: {r.edge*100:+.1f}%</span>
-                    <span style="color:#60a5fa;">EV: {r.expected_value:+.2f}</span>
-                    <span style="color:#f59e0b;">Bet: ${bet:.2f}</span>
-                </div>
-                <a href="{poly_url}" target="_blank" style="
-                    display:inline-block;
-                    margin-top:8px;
-                    background:#3b82f6;
-                    color:white;
-                    padding:4px 12px;
-                    border-radius:6px;
-                    text-decoration:none;
-                    font-size:12px;
-                ">{t('trade_on_polymarket')}</a>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        new_email = st.text_input(t("alert_email"), value=saved_email, placeholder="you@email.com")
+
+        if st.button(t("alert_save"), type="primary"):
+            if supa_url and supa_key:
+                ok = upsert_alert_config(supa_url, supa_key, address, new_edge, new_cats, new_email)
+                st.toast(t("alert_saved") if ok else t("alert_save_error"))
+            else:
+                st.warning(t("history_no_supabase"))
+
+    st.markdown("---")
+
+    # ── Alert history ─────────────────────────────────────────────────────────
+    st.subheader(t("alert_history_title"))
+
+    history: list = []
+    if supa_url and supa_key:
+        history = get_alert_history(supa_url, supa_key, address, limit=50)
+        if history:
+            hist_rows = []
+            for h in history:
+                rv = h.get("resolved_yes")
+                result_str = "✅ YES" if rv is True else ("❌ NO" if rv is False else "⏳ Pending")
+                hist_rows.append({
+                    t("scan_date_col"):           str(h.get("created_at", ""))[:16],
+                    t("market_col"):              (h.get("question") or "")[:55],
+                    t("backtest_col_type"):       (h.get("market_type") or "").capitalize(),
+                    t("backtest_col_model"):      f"{float(h.get('model_prob', 0)) * 100:.1f}%",
+                    t("backtest_col_market"):     f"{float(h.get('market_prob', 0)) * 100:.1f}%",
+                    t("backtest_col_edge"):       f"{float(h.get('edge', 0)) * 100:+.1f}%",
+                    t("backtest_col_result"):     result_str,
+                })
+            st.dataframe(pd.DataFrame(hist_rows), use_container_width=True, hide_index=True)
+        else:
+            st.info(t("alert_history_empty"))
+    else:
+        st.info(t("history_no_supabase"))
+
+    st.markdown("---")
+
+    # ── Model track record ────────────────────────────────────────────────────
+    st.subheader(t("track_record_title"))
+
+    if history:
+        resolved = [h for h in history if h.get("resolved_yes") is not None]
+        n_total = len(history)
+        n_resolved = len(resolved)
+        n_correct = sum(
+            1 for h in resolved
+            if (float(h.get("model_prob", 0)) >= 0.5) == bool(h.get("resolved_yes"))
         )
+        accuracy = n_correct / n_resolved if n_resolved else 0.0
+
+        tc1, tc2, tc3 = st.columns(3)
+        tc1.metric(t("track_total_alerts"), n_total)
+        tc2.metric(t("track_resolved"), n_resolved)
+        tc3.metric(t("track_accuracy"), f"{accuracy * 100:.1f}%")
+
+        if resolved:
+            by_type: dict = defaultdict(lambda: {"total": 0, "correct": 0})
+            for h in resolved:
+                mtype = h.get("market_type", "weather")
+                by_type[mtype]["total"] += 1
+                if (float(h.get("model_prob", 0)) >= 0.5) == bool(h.get("resolved_yes")):
+                    by_type[mtype]["correct"] += 1
+            type_rows = [
+                {
+                    "Category": mtype.capitalize(),
+                    t("track_resolved"): v["total"],
+                    t("track_accuracy"): (
+                        f"{v['correct'] / v['total'] * 100:.1f}%" if v["total"] else "—"
+                    ),
+                }
+                for mtype, v in sorted(by_type.items())
+            ]
+            st.dataframe(pd.DataFrame(type_rows), use_container_width=True, hide_index=True)
+    else:
+        st.info(t("alert_history_empty"))

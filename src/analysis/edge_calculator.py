@@ -11,7 +11,8 @@ Key formulas:
              where b = (1/price) - 1, p = model_prob, q = 1 - model_prob
 """
 from config import settings
-from src.models.market import WeatherMarket, WeatherForecast, OpportunityResult
+from typing import Any
+from src.models.market import OpportunityResult
 from src.analysis.kelly import apply_fractional_kelly, apply_kelly_caps
 
 
@@ -63,9 +64,10 @@ def compute_kelly_fraction(model_probability: float, market_price: float) -> flo
     return (b * p - q) / b
 
 
-def analyze_market(market: WeatherMarket, forecast: WeatherForecast) -> OpportunityResult:
+def analyze_market(market: Any, forecast: Any) -> OpportunityResult:
     """
-    Compute edge, EV, and Kelly sizing for one market vs. its weather forecast.
+    Compute edge, EV, and Kelly sizing for one market vs. its forecast.
+    Works for any market type (weather, crypto, sports, politics).
     """
     edge = compute_edge(market.market_implied_prob, forecast.model_probability)
     ev = compute_expected_value(forecast.model_probability, market.market_implied_prob)
