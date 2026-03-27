@@ -994,7 +994,7 @@ def render_category_bar(th: dict) -> str:
         unsafe_allow_html=True,
     )
     chosen_label = st.radio(
-        label="",
+        label=t("cat_all"),
         options=cats_labels,
         index=idx,
         horizontal=True,
