@@ -28,7 +28,7 @@ from src.data.weather_client import WeatherClient, CityNotFoundError, WeatherAPI
 from src.analysis import edge_calculator
 from src.analysis.kelly import compute_position_size, kelly_summary
 from src.models.market import WeatherForecast, OpportunityResult
-from src.components.wallet import render_wallet_sidebar, render_wallet_tab
+from src.components.wallet import render_wallet_sidebar, render_wallet_tab, process_auth_flow
 from src.components.filters import render_filter_bar
 from src.notifications import send_alert_email
 from src.data.supabase_client import (
@@ -1534,6 +1534,10 @@ def main():
         st.session_state["lang"] = _detect_browser_lang()
     if "theme" not in st.session_state:
         st.session_state["theme"] = "light"
+
+    # Drive EIP-712 auth state machine (nonce request + signature verification)
+    # Must run before any wallet-gated UI is rendered.
+    process_auth_flow()
 
     th = get_theme()
     inject_css(th)

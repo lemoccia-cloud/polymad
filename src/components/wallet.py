@@ -1,7 +1,28 @@
-"""MetaMask wallet connection component for polyMad Streamlit dashboard."""
+"""
+MetaMask wallet connection component for polyMad Streamlit dashboard.
+
+Authentication flow (EIP-712, 2-phase):
+  Phase 1 — Connect
+    Browser JS → MetaMask eth_requestAccounts → address → URL param _w_addr
+    Streamlit reads _w_addr, calls FastAPI /auth/nonce, stores nonce in session_state
+
+  Phase 2 — Sign
+    Streamlit renders signing component with embedded nonce
+    Browser JS → MetaMask eth_signTypedData_v4 → signature → URL param _w_sig + _w_iat
+    Streamlit reads params, calls auth_bridge.verify_signature() → JWT in session_state
+    URL params are cleared immediately after reading
+
+Security:
+  - Address in URL params is used ONLY to request a nonce.
+    An attacker setting ?_w_addr=0xvictim gets a nonce they cannot sign.
+  - Signature in URL params is cleared in the same script run it is read.
+  - JWT is stored ONLY in st.session_state (server-side, never in browser).
+  - Authenticated address comes exclusively from the verified JWT.
+"""
 import json
 import logging
 from collections import defaultdict
+from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
@@ -12,118 +33,286 @@ from src.data.supabase_client import (
     upsert_alert_config,
     get_alert_history,
 )
+from src.components import auth_bridge
+from src.api.security.eip712 import build_eip712_message, EIP712_DOMAIN
 
 logger = logging.getLogger(__name__)
 
 POLYGON_RPC = "https://polygon-rpc.com"
 USDC_CONTRACT = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"  # USDC on Polygon
 
+# URL param names (short, non-descriptive to avoid harvesting)
+_PARAM_ADDR = "_w_addr"
+_PARAM_SIG  = "_w_sig"
+_PARAM_IAT  = "_w_iat"
 
-_METAMASK_HTML = """
+# ── Phase 1: Connect MetaMask and send address to Streamlit ──────────────────
+
+_PHASE1_HTML = """
 <div id="wallet-container">
   <button id="connect-btn" onclick="connectWallet()" style="
     background: linear-gradient(135deg, #f6851b, #e2761b);
-    color: white;
-    border: none;
-    padding: 10px 20px;
-    border-radius: 8px;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    width: 100%;
-    transition: opacity 0.2s;
+    color: white; border: none; padding: 10px 20px;
+    border-radius: 8px; font-size: 14px; font-weight: 600;
+    cursor: pointer; width: 100%; transition: opacity 0.2s;
   " onmouseover="this.style.opacity=0.85" onmouseout="this.style.opacity=1">
     {connect_label}
   </button>
-  <div id="status" style="
-    margin-top: 8px;
-    font-size: 12px;
-    color: #aaa;
-    text-align: center;
-  ">{status_text}</div>
+  <div id="status" style="margin-top:8px;font-size:12px;color:#aaa;text-align:center;">
+    {status_text}
+  </div>
 </div>
-
 <script>
 async function connectWallet() {
   const btn = document.getElementById('connect-btn');
-  const status = document.getElementById('status');
-
+  const statusEl = document.getElementById('status');
   if (typeof window.parent.ethereum === 'undefined') {
-    status.textContent = 'MetaMask not detected. Please install it.';
-    status.style.color = '#ff6b6b';
+    statusEl.textContent = 'MetaMask not detected. Please install it.';
+    statusEl.style.color = '#ff6b6b';
     return;
   }
-
   try {
     btn.disabled = true;
     btn.style.opacity = '0.6';
-    status.textContent = 'Connecting...';
-    status.style.color = '#aaa';
-
-    const accounts = await window.parent.ethereum.request({
-      method: 'eth_requestAccounts'
-    });
-
+    statusEl.textContent = 'Connecting...';
+    const accounts = await window.parent.ethereum.request({ method: 'eth_requestAccounts' });
     const address = accounts[0];
-    const shortAddr = address.slice(0, 6) + '...' + address.slice(-4);
-
-    status.textContent = 'Connected: ' + shortAddr;
-    status.style.color = '#00c896';
-    btn.textContent = shortAddr;
-    btn.style.background = 'linear-gradient(135deg, #00c896, #00a876)';
-
-    // Send address back to Streamlit via URL param + reload
+    // Set address param and reload — address is only used to request a nonce
     const url = new URL(window.parent.location.href);
-    url.searchParams.set('wallet_address', address);
-    window.parent.history.replaceState({}, '', url.toString());
-
-    // Notify Streamlit
-    window.parent.postMessage({
-      type: 'wallet_connected',
-      address: address
-    }, '*');
-
+    url.searchParams.set('{param_addr}', address);
+    // Remove any stale sig params
+    url.searchParams.delete('{param_sig}');
+    url.searchParams.delete('{param_iat}');
+    window.parent.location.replace(url.toString());
   } catch (err) {
-    status.textContent = 'Connection refused.';
-    status.style.color = '#ff6b6b';
+    statusEl.textContent = 'Connection refused.';
+    statusEl.style.color = '#ff6b6b';
     btn.disabled = false;
     btn.style.opacity = '1';
   }
 }
-
-// Check if already connected
+// Auto-check if already connected (MetaMask passive check, no popup)
 (async () => {
   if (typeof window.parent.ethereum !== 'undefined') {
-    const accounts = await window.parent.ethereum.request({
-      method: 'eth_accounts'
-    });
-    if (accounts.length > 0) {
-      const address = accounts[0];
-      const shortAddr = address.slice(0, 6) + '...' + address.slice(-4);
-      const btn = document.getElementById('connect-btn');
-      const status = document.getElementById('status');
-      btn.textContent = shortAddr;
-      btn.style.background = 'linear-gradient(135deg, #00c896, #00a876)';
-      status.textContent = 'Wallet connected';
-      status.style.color = '#00c896';
-    }
+    try {
+      const accounts = await window.parent.ethereum.request({ method: 'eth_accounts' });
+      if (accounts.length > 0) {
+        const url = new URL(window.parent.location.href);
+        if (!url.searchParams.get('{param_addr}')) {
+          url.searchParams.set('{param_addr}', accounts[0]);
+          url.searchParams.delete('{param_sig}');
+          url.searchParams.delete('{param_iat}');
+          window.parent.location.replace(url.toString());
+        }
+      }
+    } catch (_) {}
   }
 })();
+</script>
+""".replace("{param_addr}", _PARAM_ADDR).replace("{param_sig}", _PARAM_SIG).replace("{param_iat}", _PARAM_IAT)
+
+
+# ── Phase 2: Sign EIP-712 message ───────────────────────────────────────────
+
+_PHASE2_HTML = """
+<div id="sign-container">
+  <div style="background:#1e2530;border:1px solid #3b82f6;border-radius:8px;padding:14px;margin-bottom:12px;">
+    <div style="color:#60a5fa;font-size:12px;font-weight:600;margin-bottom:6px;">
+      🔐 Sign to authenticate
+    </div>
+    <div style="color:#aaa;font-size:11px;">
+      Wallet: <span style="font-family:monospace;">{short_addr}</span>
+    </div>
+    <div style="color:#888;font-size:10px;margin-top:4px;">
+      This signs a message proving you own this wallet. No transaction or gas is needed.
+    </div>
+  </div>
+  <button id="sign-btn" onclick="signMessage()" style="
+    background: linear-gradient(135deg, #3b82f6, #2563eb);
+    color: white; border: none; padding: 10px 20px;
+    border-radius: 8px; font-size: 14px; font-weight: 600;
+    cursor: pointer; width: 100%; transition: opacity 0.2s;
+  " onmouseover="this.style.opacity=0.85" onmouseout="this.style.opacity=1">
+    ✍️ Sign Message
+  </button>
+  <div id="sign-status" style="margin-top:8px;font-size:12px;color:#aaa;text-align:center;"></div>
+</div>
+<script>
+const _typedData = {typed_data_json};
+const _address   = "{address}";
+const _paramSig  = "{param_sig}";
+const _paramIat  = "{param_iat}";
+
+async function signMessage() {
+  const btn = document.getElementById('sign-btn');
+  const statusEl = document.getElementById('sign-status');
+  try {
+    btn.disabled = true;
+    btn.style.opacity = '0.6';
+    statusEl.textContent = 'Waiting for MetaMask signature...';
+    const issuedAt = _typedData.message.issuedAt;
+    const signature = await window.parent.ethereum.request({
+      method: 'eth_signTypedData_v4',
+      params: [_address, JSON.stringify(_typedData)]
+    });
+    statusEl.textContent = 'Signature received. Verifying...';
+    statusEl.style.color = '#00c896';
+    const url = new URL(window.parent.location.href);
+    url.searchParams.set(_paramSig, signature);
+    url.searchParams.set(_paramIat, issuedAt);
+    window.parent.location.replace(url.toString());
+  } catch (err) {
+    statusEl.textContent = 'Signing cancelled or failed.';
+    statusEl.style.color = '#ff6b6b';
+    btn.disabled = false;
+    btn.style.opacity = '1';
+  }
+}
 </script>
 """
 
 
+def _build_sign_html(address: str, nonce: str) -> str:
+    """Build the Phase 2 HTML with the EIP-712 typed data embedded."""
+    issued_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    typed_data = build_eip712_message(address, nonce, issued_at)
+    typed_data_json = json.dumps(typed_data)
+    short_addr = address[:6] + "..." + address[-4:]
+    return (
+        _PHASE2_HTML
+        .replace("{typed_data_json}", typed_data_json)
+        .replace("{address}", address)
+        .replace("{short_addr}", short_addr)
+        .replace("{param_sig}", _PARAM_SIG)
+        .replace("{param_iat}", _PARAM_IAT)
+    )
+
+
+# ── Public component functions ───────────────────────────────────────────────
+
 def render_metamask_button(connect_label: str = "Connect MetaMask", status_text: str = "") -> None:
-    """Render the MetaMask connect button as an HTML component."""
-    # Replace only the two placeholders; all JS braces are already literal in the template
-    html = _METAMASK_HTML.replace("{connect_label}", connect_label).replace("{status_text}", status_text)
+    """Render the Phase 1 MetaMask connect button."""
+    html = _PHASE1_HTML.replace("{connect_label}", connect_label).replace("{status_text}", status_text)
     components.html(html, height=90)
 
 
-def get_wallet_address() -> str:
-    """Read wallet address from Streamlit query params (set by JS after connect)."""
+def render_auth_status() -> None:
+    """
+    Render a small auth status badge in the sidebar showing JWT expiry
+    or a sign-out button.  Relies on auth_bridge.is_authenticated().
+    """
+    if auth_bridge.is_authenticated():
+        address = auth_bridge.get_authenticated_address() or ""
+        short = address[:6] + "..." + address[-4:] if address else "unknown"
+        expires_at = st.session_state.get("_auth_token_expires_at", "")
+        st.sidebar.markdown(
+            f"""
+            <div style="background:rgba(0,200,150,0.1);border:1px solid #00c896;
+                        border-radius:8px;padding:10px;margin:8px 0;">
+                <div style="color:#00c896;font-size:12px;font-weight:600;">✓ Authenticated</div>
+                <div style="color:#ddd;font-size:11px;margin-top:4px;font-family:monospace;">{short}</div>
+                {f'<div style="color:#888;font-size:10px;margin-top:2px;">Expires {expires_at[:16]}</div>' if expires_at else ''}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.sidebar.button("Sign out", use_container_width=True):
+            auth_bridge.clear_auth()
+            _clear_auth_params()
+            st.rerun()
+
+
+def _clear_auth_params() -> None:
+    """Remove all auth-related URL params."""
+    for key in (_PARAM_ADDR, _PARAM_SIG, _PARAM_IAT):
+        if key in st.query_params:
+            del st.query_params[key]
+
+
+def process_auth_flow() -> None:
+    """
+    Drive the 2-phase EIP-712 authentication flow.
+    Call this once per Streamlit script run (top of main).
+
+    State machine:
+      no params → nothing to do
+      _w_addr present, no JWT → Phase 1: request nonce, render sign button
+      _w_addr + _w_sig + _w_iat present → Phase 2: verify signature, store JWT
+      already authenticated → nothing to do
+    """
+    # Already authenticated — skip
+    if auth_bridge.is_authenticated():
+        return
+
     params = st.query_params
-    return params.get("wallet_address", "")
+    address = params.get(_PARAM_ADDR, "")
+    signature = params.get(_PARAM_SIG, "")
+    issued_at = params.get(_PARAM_IAT, "")
+
+    if not address:
+        return
+
+    # Basic Ethereum address validation before making any network call
+    import re
+    if not re.match(r"^0x[0-9a-fA-F]{40}$", address):
+        _clear_auth_params()
+        return
+
+    if signature and issued_at:
+        # Phase 2: verify signature
+        nonce = st.session_state.get("_auth_pending_nonce", "")
+        if not nonce:
+            # Nonce missing from session — restart
+            _clear_auth_params()
+            st.session_state.pop("_auth_pending_nonce", None)
+            st.rerun()
+            return
+
+        # Clear URL params BEFORE verification (single-use params)
+        _clear_auth_params()
+
+        ok = auth_bridge.verify_signature(
+            address=address,
+            signature=signature,
+            nonce=nonce,
+            issued_at=issued_at,
+        )
+        st.session_state.pop("_auth_pending_nonce", None)
+        if ok:
+            st.rerun()
+        else:
+            st.error("Authentication failed. Please try again.")
+        return
+
+    # Phase 1: address received, no signature yet — request nonce
+    if "_auth_pending_nonce" not in st.session_state:
+        nonce = auth_bridge.request_nonce(address)
+        if nonce:
+            st.session_state["_auth_pending_nonce"] = nonce
+        else:
+            st.error("Could not reach authentication server. Please try again.")
+            _clear_auth_params()
+            return
+
+    nonce = st.session_state.get("_auth_pending_nonce", "")
+    if nonce:
+        # Render the sign button — embedded nonce is NOT a secret
+        # (it's a one-time challenge, useless without the private key)
+        sign_html = _build_sign_html(address, nonce)
+        components.html(sign_html, height=160)
+
+
+# ── Legacy helpers (kept for callers that haven't been updated yet) ──────────
+
+def get_wallet_address() -> str:
+    """
+    Return the authenticated wallet address from the verified JWT.
+    Returns empty string if not authenticated.
+
+    NOTE: This no longer reads from URL query params.
+    The address is the JWT sub claim — cryptographically verified.
+    """
+    return auth_bridge.get_authenticated_address() or ""
 
 
 def get_usdc_balance(address: str) -> float:
@@ -135,11 +324,8 @@ def get_usdc_balance(address: str) -> float:
         return 0.0
     try:
         import requests
-
-        # ERC-20 balanceOf(address) selector: 0x70a08231
         padded = address.lower().replace("0x", "").zfill(64)
         data = "0x70a08231" + padded
-
         payload = {
             "jsonrpc": "2.0",
             "method": "eth_call",
@@ -150,7 +336,7 @@ def get_usdc_balance(address: str) -> float:
         resp.raise_for_status()
         result = resp.json().get("result", "0x0")
         raw = int(result, 16)
-        return raw / 1e6  # USDC has 6 decimals
+        return raw / 1e6
     except Exception as exc:
         logger.debug("USDC balance fetch failed: %s", exc)
         return 0.0
@@ -158,40 +344,15 @@ def get_usdc_balance(address: str) -> float:
 
 def render_wallet_sidebar(t: "callable") -> str:
     """
-    Render wallet connect section in sidebar.
-    Returns current wallet address (or empty string).
+    Render wallet authentication section in sidebar.
+    Returns current authenticated wallet address (or empty string).
     """
-    address = get_wallet_address()
+    address = auth_bridge.get_authenticated_address() or ""
 
     if address:
-        short = address[:6] + "..." + address[-4:]
-        st.sidebar.markdown(
-            f"""
-            <div style="
-                background: rgba(0,200,150,0.1);
-                border: 1px solid #00c896;
-                border-radius: 8px;
-                padding: 10px;
-                margin: 8px 0;
-            ">
-                <div style="color:#00c896; font-size:12px; font-weight:600;">
-                    ✓ {t('wallet_connected')}
-                </div>
-                <div style="color:#ddd; font-size:11px; margin-top:4px; font-family:monospace;">
-                    {short}
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        if st.sidebar.button(t("disconnect_wallet"), use_container_width=True):
-            params = dict(st.query_params)
-            params.pop("wallet_address", None)
-            st.query_params.clear()
-            for k, v in params.items():
-                st.query_params[k] = v
-            st.rerun()
+        render_auth_status()
     else:
+        st.sidebar.markdown("**Connect Wallet**")
         render_metamask_button(connect_label=t("connect_wallet"))
 
     return address
@@ -204,7 +365,12 @@ def render_wallet_tab(
     bankroll: float,
     poly_client=None,
 ) -> None:
-    """Render the Wallet tab content with real positions and scan opportunities."""
+    """
+    Render the Wallet tab content.
+    Uses auth_bridge for positions when authenticated;
+    falls back to poly_client (unauthenticated) only when address is provided
+    but no JWT is present (backward-compatible path).
+    """
     if not address:
         st.info(f"🦊 {t('connect_wallet')} to see your portfolio.")
         render_metamask_button(connect_label=t("connect_wallet"))
@@ -219,7 +385,7 @@ def render_wallet_tab(
 
     short = address[:6] + "..." + address[-4:]
 
-    # ── Header cards ─────────────────────────────────────────────────────────
+    # ── Header cards ──────────────────────────────────────────────────────────
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown(
@@ -256,23 +422,26 @@ def render_wallet_tab(
 
     st.markdown("---")
 
-    # ── Real positions ────────────────────────────────────────────────────────
+    # ── Real positions (via auth_bridge when authenticated) ───────────────────
     st.subheader(t("positions_open"))
 
-    if poly_client is not None:
+    if auth_bridge.is_authenticated():
         with st.spinner(t("fetching_positions")):
-            positions = poly_client.get_user_positions(address)
+            api_positions = auth_bridge.get_positions()
+        positions_raw = api_positions or []
+    elif poly_client is not None:
+        with st.spinner(t("fetching_positions")):
+            positions_raw = poly_client.get_user_positions(address)
     else:
-        positions = []
+        positions_raw = []
 
-    if positions:
+    if positions_raw:
         # Aggregate portfolio totals
-        total_current = sum(float(p.get("currentValue", 0)) for p in positions)
-        total_initial = sum(float(p.get("initialValue", 0)) for p in positions)
+        total_current = sum(float(p.get("currentValue", p.get("current_value", 0))) for p in positions_raw)
+        total_initial = sum(float(p.get("initialValue", p.get("initial_value", 0))) for p in positions_raw)
         total_pnl = total_current - total_initial
         total_pnl_pct = (total_pnl / total_initial * 100) if total_initial > 0 else 0.0
 
-        # Summary metric strip
         mc1, mc2, mc3 = st.columns(3)
         mc1.metric(t("portfolio_value"), f"${total_current:,.2f}")
         pnl_sign = "+" if total_pnl >= 0 else ""
@@ -282,23 +451,22 @@ def render_wallet_tab(
 
         st.markdown("")
 
-        # Build condition_id → market lookup from current scan results
         market_by_condition = {r.market.condition_id: r.market for r in results} if results else {}
 
         rows = []
-        for pos in positions:
-            cid = pos.get("conditionId", "")
-            outcome_idx = pos.get("outcomeIndex", 0)
-            side = "YES" if outcome_idx == 0 else "NO"
+        for pos in positions_raw:
+            cid = pos.get("conditionId", pos.get("condition_id", ""))
+            outcome_idx = pos.get("outcomeIndex", pos.get("side", 0))
+            side = "YES" if outcome_idx == 0 or outcome_idx == "YES" else "NO"
             size = float(pos.get("size", 0))
-            avg_price = float(pos.get("avgPrice", 0))
-            current_value = float(pos.get("currentValue", 0))
-            initial_value = float(pos.get("initialValue", 0))
+            avg_price = float(pos.get("avgPrice", pos.get("avg_price", 0)))
+            current_value = float(pos.get("currentValue", pos.get("current_value", 0)))
+            initial_value = float(pos.get("initialValue", pos.get("initial_value", 0)))
             pnl = current_value - initial_value
             pnl_pct = (pnl / initial_value * 100) if initial_value > 0 else 0.0
 
             mkt = market_by_condition.get(cid)
-            title = (mkt.question[:60] + "...") if mkt else pos.get("title", cid[:20])
+            title = (mkt.question[:60] + "...") if mkt else pos.get("title", pos.get("question", cid[:20]))
 
             pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
             ret_str = f"+{pnl_pct:.1f}%" if pnl_pct >= 0 else f"{pnl_pct:.1f}%"
@@ -411,13 +579,13 @@ def render_wallet_tab(
                 rv = h.get("resolved_yes")
                 result_str = "✅ YES" if rv is True else ("❌ NO" if rv is False else "⏳ Pending")
                 hist_rows.append({
-                    t("scan_date_col"):           str(h.get("created_at", ""))[:16],
-                    t("market_col"):              (h.get("question") or "")[:55],
-                    t("backtest_col_type"):       (h.get("market_type") or "").capitalize(),
-                    t("backtest_col_model"):      f"{float(h.get('model_prob', 0)) * 100:.1f}%",
-                    t("backtest_col_market"):     f"{float(h.get('market_prob', 0)) * 100:.1f}%",
-                    t("backtest_col_edge"):       f"{float(h.get('edge', 0)) * 100:+.1f}%",
-                    t("backtest_col_result"):     result_str,
+                    t("scan_date_col"):       str(h.get("created_at", ""))[:16],
+                    t("market_col"):          (h.get("question") or "")[:55],
+                    t("backtest_col_type"):   (h.get("market_type") or "").capitalize(),
+                    t("backtest_col_model"):  f"{float(h.get('model_prob', 0)) * 100:.1f}%",
+                    t("backtest_col_market"): f"{float(h.get('market_prob', 0)) * 100:.1f}%",
+                    t("backtest_col_edge"):   f"{float(h.get('edge', 0)) * 100:+.1f}%",
+                    t("backtest_col_result"): result_str,
                 })
             st.dataframe(pd.DataFrame(hist_rows), use_container_width=True, hide_index=True)
         else:
