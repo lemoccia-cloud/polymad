@@ -153,4 +153,14 @@ CITY_COORDINATES: dict = {
     "Monterrey": (25.67, -100.31),
     "Montreal": (45.50, -73.57),
     "Calgary": (51.05, -114.07),
+    # Additional cities
+    "Ankara": (39.93, 32.86),
+    "Lucknow": (26.85, 80.95),
+    "Hyderabad": (17.38, 78.47),
+    "Chennai": (13.08, 80.27),
+    "Kolkata": (22.57, 88.36),
+    "Pune": (18.52, 73.86),
+    "Ahmedabad": (23.03, 72.59),
+    "New Delhi": (28.61, 77.21),
+    "Bangalore": (12.97, 77.59),
 }

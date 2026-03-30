@@ -5,6 +5,7 @@ Run: streamlit run src/dashboard.py
 """
 import sys
 import os
+import html as _html
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import statistics
@@ -729,7 +730,7 @@ def render_alert_card(result: OpportunityResult, bankroll: float, th: dict) -> N
     badge_icon, badge_color, badge_label = _TYPE_META.get(mtype, ("📊", th["accent"], mtype.upper()))
 
     if mtype == "crypto":
-        title_text  = m.asset
+        title_text  = _html.escape(m.asset)
         detail_text = f"{'≥' if m.direction=='above' else '≤'} ${m.threshold_usd:,.0f}"
         footer_parts = [
             f"{t('card_spot')}: ${getattr(f,'spot_price',0):,.0f}",
@@ -738,9 +739,9 @@ def render_alert_card(result: OpportunityResult, bankroll: float, th: dict) -> N
             f"{t('liquidity')}: {_usd(m.liquidity_usd)}",
         ]
     elif mtype == "sports":
-        title_text  = m.home_team
-        detail_text = f"vs {m.away_team}"
-        src = getattr(f, "source", "—").replace("_", " ").title()
+        title_text  = _html.escape(m.home_team)
+        detail_text = f"vs {_html.escape(m.away_team)}"
+        src = _html.escape(getattr(f, "source", "—").replace("_", " ").title())
         footer_parts = [
             f"{t('card_elo_home')}: {getattr(f,'elo_home',0):.0f}",
             f"{t('card_elo_away')}: {getattr(f,'elo_away',0):.0f}",
@@ -748,18 +749,18 @@ def render_alert_card(result: OpportunityResult, bankroll: float, th: dict) -> N
             f"{t('liquidity')}: {_usd(m.liquidity_usd)}",
         ]
     elif mtype == "politics":
-        title_text  = m.topic[:44]
+        title_text  = _html.escape(m.topic[:44])
         detail_text = ""
-        src = getattr(f, "source", "—").replace("_", " ").title()
-        met_ref = getattr(f, "metaculus_title", "") or (f"#{getattr(f,'metaculus_id','—')}" if getattr(f,"metaculus_id",None) else "baseline")
+        src = _html.escape(getattr(f, "source", "—").replace("_", " ").title())
+        met_ref = _html.escape((getattr(f, "metaculus_title", "") or (f"#{getattr(f,'metaculus_id','—')}" if getattr(f,"metaculus_id",None) else "baseline"))[:32])
         footer_parts = [
             f"{t('card_source')}: {src}",
-            f"ref: {met_ref[:32]}",
+            f"ref: {met_ref}",
             f"{t('liquidity')}: {_usd(m.liquidity_usd)}",
         ]
     else:  # weather
         bucket_sym  = {"above": "≥", "below": "≤", "exact": "="}
-        title_text  = m.city
+        title_text  = _html.escape(m.city)
         detail_text = f"{bucket_sym.get(m.bucket_type,'')} {m.threshold_celsius:.0f}°C"
         footer_parts = [
             f"{t('card_forecast_model')}: {getattr(f,'forecast_model','—')}",
@@ -852,7 +853,7 @@ def render_alert_card(result: OpportunityResult, bankroll: float, th: dict) -> N
                   margin-top:8px; padding-left:4px;
                   display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
                   overflow:hidden;">
-        {m.question}
+        {_html.escape(m.question)}
       </div>
 
       <!-- Row 3: probability bars -->
