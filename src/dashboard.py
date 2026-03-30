@@ -812,14 +812,14 @@ def render_alert_card(result: OpportunityResult, bankroll: float, th: dict) -> N
         + f"</div>"
     )
 
-    # ── Full card (single st.markdown call) ───────────────────────────────────
-    st.markdown(f"""
-    <div style="
-        background:{th['card']}; border:1px solid {th['card_border']};
-        border-left:4px solid {accent_border};
-        border-radius:14px; padding:16px 18px 12px;
-        margin-bottom:16px; overflow:hidden;
-    ">
+    # ── Full card (st.html — bypasses markdown pipeline entirely) ────────────
+    st.html(f"""
+<div style="
+    background:{th['card']}; border:1px solid {th['card_border']};
+    border-left:4px solid {accent_border};
+    border-radius:14px; padding:16px 18px 12px;
+    margin-bottom:16px; overflow:hidden;
+">
       <!-- Row 1: type badge · title · detail · date · trade button -->
       <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap;">
         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; flex:1; min-width:0;">
@@ -868,7 +868,7 @@ def render_alert_card(result: OpportunityResult, bankroll: float, th: dict) -> N
         {footer_html}
       </div>
     </div>
-    """, unsafe_allow_html=True)
+    """)
 
     # ── Ensemble expander — weather only, unchanged ───────────────────────────
     if mtype == "weather":
