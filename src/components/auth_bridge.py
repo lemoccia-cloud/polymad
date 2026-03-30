@@ -25,6 +25,7 @@ from typing import Optional
 
 import httpx
 import streamlit as st
+import streamlit.components.v1 as _components
 
 logger = logging.getLogger(__name__)
 
@@ -132,9 +133,21 @@ def verify_signature(
         "issued_at": issued_at,
     })
     if data and "access_token" in data:
-        st.session_state[_TOKEN_KEY] = data["access_token"]
-        st.session_state[_TOKEN_EXP_KEY] = data.get("expires_at", "")
-        st.session_state[_ADDRESS_KEY] = address.lower()
+        token = data["access_token"]
+        expires_at = data.get("expires_at", "")
+        addr_lower = address.lower()
+        st.session_state[_TOKEN_KEY] = token
+        st.session_state[_TOKEN_EXP_KEY] = expires_at
+        st.session_state[_ADDRESS_KEY] = addr_lower
+        # Persist JWT in sessionStorage so it survives page reloads
+        _components.html(
+            f"<script>"
+            f"sessionStorage.setItem('_polymad_jwt',{repr(token)});"
+            f"sessionStorage.setItem('_polymad_jwt_exp',{repr(expires_at)});"
+            f"sessionStorage.setItem('_polymad_addr',{repr(addr_lower)});"
+            f"</script>",
+            height=0,
+        )
         logger.info("auth_bridge: authentication successful")
         return True
     return False
@@ -169,9 +182,17 @@ def get_authenticated_address() -> Optional[str]:
 
 
 def clear_auth() -> None:
-    """Remove all authentication state from session_state (sign-out)."""
+    """Remove all authentication state from session_state and sessionStorage (sign-out)."""
     for key in (_TOKEN_KEY, _TOKEN_EXP_KEY, _ADDRESS_KEY):
         st.session_state.pop(key, None)
+    _components.html(
+        "<script>"
+        "sessionStorage.removeItem('_polymad_jwt');"
+        "sessionStorage.removeItem('_polymad_jwt_exp');"
+        "sessionStorage.removeItem('_polymad_addr');"
+        "</script>",
+        height=0,
+    )
 
 
 def get_portfolio() -> Optional[dict]:

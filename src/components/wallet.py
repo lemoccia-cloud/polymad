@@ -45,6 +45,7 @@ USDC_CONTRACT = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"  # USDC on Polygon
 _PARAM_ADDR = "_w_addr"
 _PARAM_SIG  = "_w_sig"
 _PARAM_IAT  = "_w_iat"
+_PARAM_JWT  = "_w_jwt"  # used to restore JWT from sessionStorage after page reload
 
 # ── Phase 1: Connect MetaMask and send address to Streamlit ──────────────────
 
@@ -172,6 +173,34 @@ async function signMessage() {
 """
 
 
+# ── Restore JWT from sessionStorage after page reload ────────────────────────
+
+_RESTORE_HTML = f"""
+<script>
+(function() {{
+  var jwt = sessionStorage.getItem('_polymad_jwt');
+  var exp = sessionStorage.getItem('_polymad_jwt_exp');
+  if (!jwt) return;
+  if (exp) {{
+    try {{
+      if (new Date(exp) <= new Date()) {{
+        sessionStorage.removeItem('_polymad_jwt');
+        sessionStorage.removeItem('_polymad_jwt_exp');
+        sessionStorage.removeItem('_polymad_addr');
+        return;
+      }}
+    }} catch(e) {{}}
+  }}
+  var url = new URL(window.parent.location.href);
+  if (!url.searchParams.get('{_PARAM_JWT}')) {{
+    url.searchParams.set('{_PARAM_JWT}', jwt);
+    window.parent.location.replace(url.toString());
+  }}
+}})();
+</script>
+"""
+
+
 def _build_sign_html(address: str, nonce: str) -> str:
     """Build the Phase 2 HTML with the EIP-712 typed data embedded."""
     issued_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -224,7 +253,7 @@ def render_auth_status() -> None:
 
 def _clear_auth_params() -> None:
     """Remove all auth-related URL params."""
-    for key in (_PARAM_ADDR, _PARAM_SIG, _PARAM_IAT):
+    for key in (_PARAM_ADDR, _PARAM_SIG, _PARAM_IAT, _PARAM_JWT):
         if key in st.query_params:
             del st.query_params[key]
 
@@ -235,21 +264,50 @@ def process_auth_flow() -> None:
     Call this once per Streamlit script run (top of main).
 
     State machine:
-      no params → nothing to do
+      already authenticated → nothing to do
+      _w_jwt present → restore JWT from sessionStorage (no re-sign needed)
+      no params → inject restore component (reads sessionStorage)
       _w_addr present, no JWT → Phase 1: request nonce, render sign button
       _w_addr + _w_sig + _w_iat present → Phase 2: verify signature, store JWT
-      already authenticated → nothing to do
     """
     # Already authenticated — skip
     if auth_bridge.is_authenticated():
         return
 
     params = st.query_params
+
+    # ── Restore path: JWT passed from sessionStorage via URL param ────────────
+    jwt_param = params.get(_PARAM_JWT, "")
+    if jwt_param:
+        from src.api.security.jwt_handler import decode_access_token
+        addr = decode_access_token(jwt_param)
+        if addr:
+            st.session_state[auth_bridge._TOKEN_KEY] = jwt_param
+            st.session_state[auth_bridge._ADDRESS_KEY] = addr
+            if _PARAM_JWT in st.query_params:
+                del st.query_params[_PARAM_JWT]
+            st.rerun()
+            return
+        else:
+            # Expired or invalid JWT — clear sessionStorage and the param
+            components.html(
+                "<script>"
+                "sessionStorage.removeItem('_polymad_jwt');"
+                "sessionStorage.removeItem('_polymad_jwt_exp');"
+                "sessionStorage.removeItem('_polymad_addr');"
+                "</script>",
+                height=0,
+            )
+            if _PARAM_JWT in st.query_params:
+                del st.query_params[_PARAM_JWT]
+
     address = params.get(_PARAM_ADDR, "")
     signature = params.get(_PARAM_SIG, "")
     issued_at = params.get(_PARAM_IAT, "")
 
     if not address:
+        # No auth params at all — try to restore from sessionStorage
+        components.html(_RESTORE_HTML, height=0)
         return
 
     # Basic Ethereum address validation before making any network call

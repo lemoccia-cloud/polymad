@@ -883,6 +883,9 @@ def render_alert_card(result: OpportunityResult, bankroll: float, th: dict) -> N
 # ─── Full results table ───────────────────────────────────────────────────────
 
 def render_full_table(results: list, bankroll: float, th: dict) -> None:
+    if not results:
+        st.info(t("no_results"))
+        return
     bucket_label = {"above": "≥", "below": "≤", "exact": "="}
     lang = st.session_state.get("lang", "en")
     rows = []
