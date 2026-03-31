@@ -1,0 +1,1 @@
+"""polyMad Telegram Bot package."""

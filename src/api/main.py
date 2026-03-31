@@ -8,10 +8,17 @@ Security hardening applied at this layer:
   - Sensitive data log filter: installed before first request
   - JWT secret validated at startup (hard fail if missing/short)
   - Proxy headers trusted for Railway deployment (real client IP for rate limits)
+
+Fase 3 additions:
+  - Telegram bot (long-polling) started as asyncio task in lifespan
+  - APScheduler daily digest job started in lifespan
+  - Both are gracefully skipped if TELEGRAM_BOT_TOKEN is not set
 """
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+from typing import Optional
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -62,9 +69,45 @@ async def _lifespan(app: FastAPI):
     install_sensitive_filter()
     logger.info("startup: SensitiveDataFilter installed")
 
+    # ── Fase 3: Telegram bot + scheduler (optional — skipped if token absent) ──
+    bot_task: Optional[asyncio.Task] = None
+    scheduler = None
+    telegram_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+
+    if telegram_token:
+        try:
+            from src.bot.telegram_bot import run_bot
+            from src.bot.scheduler import build_scheduler
+
+            # Start APScheduler (daily digest)
+            scheduler = build_scheduler()
+            scheduler.start()
+            logger.info("startup: APScheduler started (daily digest 08:00 UTC)")
+
+            # Start Telegram bot as background asyncio task
+            bot_task = asyncio.create_task(run_bot(telegram_token))
+            logger.info("startup: Telegram bot task created")
+        except Exception as exc:
+            logger.error("startup: Telegram bot/scheduler failed to start: %s", exc)
+    else:
+        logger.info("startup: TELEGRAM_BOT_TOKEN not set — bot disabled")
+
     yield
 
-    # Teardown: purge any lingering nonces (best-effort)
+    # Teardown
+    if bot_task and not bot_task.done():
+        bot_task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(bot_task), timeout=5.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+        logger.info("shutdown: Telegram bot task stopped")
+
+    if scheduler and scheduler.running:
+        scheduler.shutdown(wait=False)
+        logger.info("shutdown: APScheduler stopped")
+
+    # Purge any lingering nonces (best-effort)
     purged = nonce_store.purge_expired()
     logger.info("shutdown: purged %d expired nonces", purged)
 

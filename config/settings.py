@@ -1,3 +1,8 @@
+import os
+
+# Fase 3 — Telegram Bot (optional — bot is disabled if not set)
+TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+
 # API base URLs
 GAMMA_API_BASE: str = "https://gamma-api.polymarket.com"
 CLOB_API_BASE: str = "https://clob.polymarket.com"

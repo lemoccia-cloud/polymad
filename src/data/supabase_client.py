@@ -38,6 +38,17 @@ Supabase DDL (run once in the Supabase SQL editor):
     );
     CREATE INDEX IF NOT EXISTS ON market_outcomes (resolved_yes, resolution_date);
     CREATE INDEX IF NOT EXISTS ON market_outcomes (market_type);
+
+    -- Fase 3: Telegram bot subscribers
+    CREATE TABLE IF NOT EXISTS telegram_users (
+        id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        chat_id        bigint NOT NULL UNIQUE,
+        username       text,
+        edge_threshold float DEFAULT 0.10,
+        active         boolean DEFAULT true,
+        created_at     timestamptz DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS ON telegram_users (active);
 """
 import json
 import logging
