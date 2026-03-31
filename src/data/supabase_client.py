@@ -19,7 +19,7 @@ Supabase DDL (run once in the Supabase SQL editor):
         total_markets  int,
         alerts_summary jsonb
     );
-    CREATE INDEX IF NOT EXISTS ON scans (wallet_address, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_scans_wallet ON scans (wallet_address, created_at DESC);
 
     -- Backtesting: one row per prediction, updated when market resolves
     CREATE TABLE IF NOT EXISTS market_outcomes (
@@ -36,8 +36,8 @@ Supabase DDL (run once in the Supabase SQL editor):
         resolution_date date,
         UNIQUE (market_id)                -- one row per market, no duplicates
     );
-    CREATE INDEX IF NOT EXISTS ON market_outcomes (resolved_yes, resolution_date);
-    CREATE INDEX IF NOT EXISTS ON market_outcomes (market_type);
+    CREATE INDEX IF NOT EXISTS idx_market_outcomes_resolved ON market_outcomes (resolved_yes, resolution_date);
+    CREATE INDEX IF NOT EXISTS idx_market_outcomes_type ON market_outcomes (market_type);
 
     -- Fase 3: Telegram bot subscribers
     CREATE TABLE IF NOT EXISTS telegram_users (
@@ -48,7 +48,7 @@ Supabase DDL (run once in the Supabase SQL editor):
         active         boolean DEFAULT true,
         created_at     timestamptz DEFAULT now()
     );
-    CREATE INDEX IF NOT EXISTS ON telegram_users (active);
+    CREATE INDEX IF NOT EXISTS idx_telegram_users_active ON telegram_users (active);
 """
 import json
 import logging
