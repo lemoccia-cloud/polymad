@@ -55,7 +55,7 @@ def _run_analysis_sync(
 
     # ── Weather markets ────────────────────────────────────────────────────────
     try:
-        raw_weather = _poly_client.fetch_markets(
+        raw_weather = _poly_client.fetch_weather_markets(
             min_liquidity=0.0, max_days=settings.MAX_DAYS_TO_EXPIRY
         )
     except PolymarketAPIError as exc:
