@@ -88,3 +88,4 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_at: str = Field(description="ISO-8601 UTC expiry timestamp")
+    plan: str = Field(default="free", description="Subscription plan: free | pro | trader")

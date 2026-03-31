@@ -31,6 +31,7 @@ from src.analysis.kelly import compute_position_size, kelly_summary
 from src.models.market import WeatherForecast, OpportunityResult
 from src.components.wallet import render_wallet_sidebar, render_wallet_tab, process_auth_flow
 from src.components.filters import render_filter_bar
+from src.components.auth_bridge import get_authenticated_plan, get_checkout_url
 from src.notifications import send_alert_email
 from src.data.supabase_client import (
     save_scan, get_scan_history, build_alerts_summary,
@@ -1097,6 +1098,19 @@ def render_sidebar(th: dict):
         </div>
         """, unsafe_allow_html=True)
 
+        # ── Plan badge ──────────────────────────────────────────────────────
+        _plan = get_authenticated_plan()
+        _plan_colors = {"free": "#6b7280", "pro": "#2563eb", "trader": "#7c3aed"}
+        _plan_color = _plan_colors.get(_plan, "#6b7280")
+        _plan_label = settings.PLAN_LIMITS.get(_plan, {}).get("label", _plan.capitalize())
+        st.markdown(
+            f"<div style='text-align:center; margin-bottom:12px;'>"
+            f"<span style='background:{_plan_color}22; color:{_plan_color}; border:1px solid {_plan_color}55; "
+            f"border-radius:12px; padding:2px 10px; font-size:11px; font-weight:700; letter-spacing:0.05em;'>"
+            f"{_plan_label}</span></div>",
+            unsafe_allow_html=True,
+        )
+
         # ── Language + Theme ─────────────────────────────────────────────────
         col_lang, col_theme = st.columns([4, 1])
         with col_lang:
@@ -1148,10 +1162,14 @@ def render_sidebar(th: dict):
         # ── Data settings ────────────────────────────────────────────────────
         _sb_section(t("sidebar_data"), th)
 
+        _plan_limit = settings.PLAN_LIMITS.get(get_authenticated_plan(), {}).get("max_markets", 50)
         max_markets = int(st.number_input(
-            t("max_markets"), min_value=5, max_value=500, value=50, step=10,
+            t("max_markets"), min_value=5, max_value=_plan_limit, value=min(50, _plan_limit), step=10,
             help=t("help_max_markets"),
         ))
+        if _plan_limit < 200:
+            st.caption(f"Plano {settings.PLAN_LIMITS[get_authenticated_plan()]['label']}: máx {_plan_limit} mercados")
+
         cities_filter = st.multiselect(
             t("filter_cities"),
             options=sorted(settings.CITY_COORDINATES.keys()),
@@ -1184,6 +1202,33 @@ def render_sidebar(th: dict):
         # ── Wallet ───────────────────────────────────────────────────────────
         _sb_section(f"🦊 {t('wallet')}", th)
         wallet_address = render_wallet_sidebar(t)
+
+        # ── Upgrade CTA ──────────────────────────────────────────────────────
+        _current_plan = get_authenticated_plan()
+        if _current_plan == "free":
+            _sb_section("⚡ Upgrade", th)
+            if st.button("Pro — $19/mês", use_container_width=True, type="secondary"):
+                _url = get_checkout_url(
+                    "pro",
+                    success_url="https://polymad.up.railway.app/?plan_success=1",
+                    cancel_url="https://polymad.up.railway.app/",
+                )
+                if _url:
+                    st.markdown(f'<meta http-equiv="refresh" content="0; url={_url}">', unsafe_allow_html=True)
+                else:
+                    st.info("Conecte sua carteira primeiro para fazer upgrade.")
+        elif _current_plan == "pro":
+            _sb_section("⚡ Upgrade", th)
+            if st.button("Trader — $49/mês", use_container_width=True, type="secondary"):
+                _url = get_checkout_url(
+                    "trader",
+                    success_url="https://polymad.up.railway.app/?plan_success=1",
+                    cancel_url="https://polymad.up.railway.app/",
+                )
+                if _url:
+                    st.markdown(f'<meta http-equiv="refresh" content="0; url={_url}">', unsafe_allow_html=True)
+                else:
+                    st.info("Conecte sua carteira primeiro para fazer upgrade.")
 
     return bankroll, edge_threshold, model, max_markets, cities_filter, run_btn, wallet_address, notify_enabled, notify_email
 

@@ -3,6 +3,19 @@ import os
 # Fase 3 — Telegram Bot (optional — bot is disabled if not set)
 TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
+# ── Fase 4: Subscription plans ────────────────────────────────────────────────
+PLAN_LIMITS: dict = {
+    "free":   {"max_markets": 50,   "label": "Free"},
+    "pro":    {"max_markets": 200,  "label": "Pro"},
+    "trader": {"max_markets": 1000, "label": "Trader"},
+}
+
+# Stripe (set in Railway environment variables)
+STRIPE_SECRET_KEY: str = os.environ.get("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET: str = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_PRICE_PRO_MONTHLY: str = os.environ.get("STRIPE_PRICE_PRO_MONTHLY", "")
+STRIPE_PRICE_TRADER_MONTHLY: str = os.environ.get("STRIPE_PRICE_TRADER_MONTHLY", "")
+
 # API base URLs
 GAMMA_API_BASE: str = "https://gamma-api.polymarket.com"
 CLOB_API_BASE: str = "https://clob.polymarket.com"

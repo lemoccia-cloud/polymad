@@ -150,3 +150,95 @@ class TestDecodeAccessToken:
         }):
             result = decode_access_token(token)
         assert result == TEST_ADDRESS
+
+
+# ── Plan claim ────────────────────────────────────────────────────────────────
+
+class TestPlanClaim:
+    def test_default_plan_is_free(self):
+        from src.api.security.jwt_handler import create_access_token
+        with _patch_secret():
+            token, _ = create_access_token(TEST_ADDRESS)
+            payload = jose_jwt.decode(token, TEST_SECRET, algorithms=["HS256"])
+        assert payload["plan"] == "free"
+
+    def test_pro_plan_encoded(self):
+        from src.api.security.jwt_handler import create_access_token
+        with _patch_secret():
+            token, _ = create_access_token(TEST_ADDRESS, plan="pro")
+            payload = jose_jwt.decode(token, TEST_SECRET, algorithms=["HS256"])
+        assert payload["plan"] == "pro"
+
+    def test_trader_plan_encoded(self):
+        from src.api.security.jwt_handler import create_access_token
+        with _patch_secret():
+            token, _ = create_access_token(TEST_ADDRESS, plan="trader")
+            payload = jose_jwt.decode(token, TEST_SECRET, algorithms=["HS256"])
+        assert payload["plan"] == "trader"
+
+    def test_invalid_plan_defaults_to_free(self):
+        from src.api.security.jwt_handler import create_access_token
+        with _patch_secret():
+            token, _ = create_access_token(TEST_ADDRESS, plan="enterprise")
+            payload = jose_jwt.decode(token, TEST_SECRET, algorithms=["HS256"])
+        assert payload["plan"] == "free"
+
+
+# ── decode_access_token_full ──────────────────────────────────────────────────
+
+class TestDecodeAccessTokenFull:
+    def test_returns_address_and_plan(self):
+        from src.api.security.jwt_handler import create_access_token, decode_access_token_full
+        with _patch_secret():
+            token, _ = create_access_token(TEST_ADDRESS, plan="pro")
+            result = decode_access_token_full(token)
+        assert result is not None
+        address, plan = result
+        assert address == TEST_ADDRESS
+        assert plan == "pro"
+
+    def test_default_plan_free_when_missing(self):
+        """Old tokens without plan claim should default to free."""
+        from src.api.security.jwt_handler import decode_access_token_full
+        payload = {
+            "sub": TEST_ADDRESS,
+            "iat": int(datetime.now(timezone.utc).timestamp()),
+            "exp": int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()),
+            "typ": "access",
+            # no "plan" claim
+        }
+        with _patch_secret():
+            token = jose_jwt.encode(payload, TEST_SECRET, algorithm="HS256")
+            result = decode_access_token_full(token)
+        assert result is not None
+        _, plan = result
+        assert plan == "free"
+
+    def test_invalid_token_returns_none(self):
+        from src.api.security.jwt_handler import decode_access_token_full
+        with _patch_secret():
+            assert decode_access_token_full("bad.token.here") is None
+
+    def test_unknown_plan_value_defaults_to_free(self):
+        """Tokens with unrecognised plan values are sanitised to free."""
+        from src.api.security.jwt_handler import decode_access_token_full
+        payload = {
+            "sub": TEST_ADDRESS,
+            "iat": int(datetime.now(timezone.utc).timestamp()),
+            "exp": int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()),
+            "typ": "access",
+            "plan": "vip_ultra",
+        }
+        with _patch_secret():
+            token = jose_jwt.encode(payload, TEST_SECRET, algorithm="HS256")
+            result = decode_access_token_full(token)
+        assert result is not None
+        _, plan = result
+        assert plan == "free"
+
+    def test_trader_plan_roundtrip(self):
+        from src.api.security.jwt_handler import create_access_token, decode_access_token_full
+        with _patch_secret():
+            token, _ = create_access_token(TEST_ADDRESS, plan="trader")
+            result = decode_access_token_full(token)
+        assert result == (TEST_ADDRESS, "trader")

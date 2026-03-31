@@ -29,6 +29,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.api.routers import auth as auth_router
 from src.api.routers import portfolio as portfolio_router
+from src.api.routers import billing as billing_router
+from src.api.routers import stripe_webhooks as stripe_webhooks_router
 from src.api.security.jwt_handler import _get_secret
 from src.api.security.log_filter import install_sensitive_filter
 from src.api.security.nonce_store import nonce_store
@@ -157,6 +159,8 @@ def create_app() -> FastAPI:
     # -- Routers --------------------------------------------------------------
     app.include_router(auth_router.router)
     app.include_router(portfolio_router.router)
+    app.include_router(billing_router.router)
+    app.include_router(stripe_webhooks_router.router)
 
     # -- Health check (unauthenticated) ---------------------------------------
     @app.get("/health", tags=["meta"], summary="Health check")

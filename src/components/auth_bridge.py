@@ -14,8 +14,11 @@ Public API:
     verify_signature(address, sig, nonce, issued_at) → bool
     get_portfolio()                 → dict or None
     get_positions(include_closed)   → list or None
+    get_checkout_url(plan, success_url, cancel_url) → str or None
+    get_portal_url(return_url)      → str or None
     is_authenticated()              → bool
     get_authenticated_address()     → str or None
+    get_authenticated_plan()        → str ("free" | "pro" | "trader")
     clear_auth()                    → None
 """
 import logging
@@ -37,6 +40,7 @@ _TIMEOUT = 10.0  # seconds
 _TOKEN_KEY = "_auth_token"
 _TOKEN_EXP_KEY = "_auth_token_expires_at"
 _ADDRESS_KEY = "_auth_address"
+_PLAN_KEY = "_auth_plan"
 
 
 # ---------------------------------------------------------------------------
@@ -136,9 +140,11 @@ def verify_signature(
         token = data["access_token"]
         expires_at = data.get("expires_at", "")
         addr_lower = address.lower()
+        plan = data.get("plan", "free")
         st.session_state[_TOKEN_KEY] = token
         st.session_state[_TOKEN_EXP_KEY] = expires_at
         st.session_state[_ADDRESS_KEY] = addr_lower
+        st.session_state[_PLAN_KEY] = plan
         # Persist JWT in sessionStorage so it survives page reloads
         _components.html(
             f"<script>"
@@ -148,7 +154,7 @@ def verify_signature(
             f"</script>",
             height=0,
         )
-        logger.info("auth_bridge: authentication successful")
+        logger.info("auth_bridge: authentication successful plan=%s", plan)
         return True
     return False
 
@@ -181,9 +187,19 @@ def get_authenticated_address() -> Optional[str]:
     return st.session_state.get(_ADDRESS_KEY)
 
 
+def get_authenticated_plan() -> str:
+    """
+    Return the subscription plan for the authenticated user: "free", "pro", or "trader".
+    Defaults to "free" if not authenticated or plan not stored.
+    """
+    if not is_authenticated():
+        return "free"
+    return st.session_state.get(_PLAN_KEY, "free")
+
+
 def clear_auth() -> None:
     """Remove all authentication state from session_state and sessionStorage (sign-out)."""
-    for key in (_TOKEN_KEY, _TOKEN_EXP_KEY, _ADDRESS_KEY):
+    for key in (_TOKEN_KEY, _TOKEN_EXP_KEY, _ADDRESS_KEY, _PLAN_KEY):
         st.session_state.pop(key, None)
     _components.html(
         "<script>"
@@ -193,6 +209,48 @@ def clear_auth() -> None:
         "</script>",
         height=0,
     )
+
+
+def get_checkout_url(plan: str, success_url: str, cancel_url: str) -> Optional[str]:
+    """
+    Create a Stripe Checkout Session for the given plan and return the checkout URL.
+    Returns None if unauthenticated or on any error.
+    """
+    if not is_authenticated():
+        return None
+    try:
+        resp = httpx.post(
+            f"{_FASTAPI_BASE}/api/billing/checkout",
+            params={"plan": plan, "success_url": success_url, "cancel_url": cancel_url},
+            headers=_auth_headers(),
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        return resp.json().get("checkout_url")
+    except Exception:
+        logger.error("auth_bridge: get_checkout_url failed")
+        return None
+
+
+def get_portal_url(return_url: str) -> Optional[str]:
+    """
+    Fetch the Stripe Customer Portal URL for the authenticated wallet.
+    Returns None if unauthenticated, no billing account, or on any error.
+    """
+    if not is_authenticated():
+        return None
+    try:
+        resp = httpx.get(
+            f"{_FASTAPI_BASE}/api/billing/portal",
+            params={"return_url": return_url},
+            headers=_auth_headers(),
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        return resp.json().get("portal_url")
+    except Exception:
+        logger.error("auth_bridge: get_portal_url failed")
+        return None
 
 
 def get_portfolio() -> Optional[dict]:

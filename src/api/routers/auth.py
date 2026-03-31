@@ -10,6 +10,7 @@ Security controls per endpoint:
                   (timing-safe: always runs to completion regardless of fail reason)
 """
 import logging
+import os
 from datetime import timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -19,6 +20,7 @@ from src.api.schemas.auth import NonceRequest, NonceResponse, TokenResponse, Ver
 from src.api.security.eip712 import verify_eip712_signature
 from src.api.security.jwt_handler import create_access_token
 from src.api.security.nonce_store import NonceStore
+from src.data.supabase_client import get_user_plan, upsert_user_plan
 
 logger = logging.getLogger(__name__)
 
@@ -95,12 +97,22 @@ def verify_signature(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    token, expiry = create_access_token(body.address)
+    # Step 4: look up (or create) the user's subscription plan.
+    supabase_url = os.environ.get("SUPABASE_URL", "")
+    supabase_key = os.environ.get("SUPABASE_ANON_KEY", "")
+    plan = "free"
+    if supabase_url and supabase_key:
+        plan = get_user_plan(supabase_url, supabase_key, body.address)
+        # Ensure user row exists in users table (upsert preserves existing plan)
+        upsert_user_plan(supabase_url, supabase_key, body.address, plan)
+
+    token, expiry = create_access_token(body.address, plan=plan)
     expires_at = expiry.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    logger.info("auth.verify success addr_prefix=%s", addr_prefix)
+    logger.info("auth.verify success addr_prefix=%s plan=%s", addr_prefix, plan)
     return TokenResponse(
         access_token=token,
         token_type="bearer",
         expires_at=expires_at,
+        plan=plan,
     )

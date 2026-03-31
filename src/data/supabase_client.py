@@ -39,6 +39,19 @@ Supabase DDL (run once in the Supabase SQL editor):
     CREATE INDEX IF NOT EXISTS idx_market_outcomes_resolved ON market_outcomes (resolved_yes, resolution_date);
     CREATE INDEX IF NOT EXISTS idx_market_outcomes_type ON market_outcomes (market_type);
 
+    -- Fase 4: Stripe subscription users
+    CREATE TABLE IF NOT EXISTS users (
+        wallet_address        TEXT PRIMARY KEY,
+        stripe_customer_id    TEXT,
+        stripe_subscription_id TEXT,
+        plan                  TEXT NOT NULL DEFAULT 'free',
+        billing_email         TEXT,
+        plan_updated_at       TIMESTAMPTZ DEFAULT now(),
+        created_at            TIMESTAMPTZ DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_users_plan ON users (plan);
+    CREATE INDEX IF NOT EXISTS idx_users_stripe_customer ON users (stripe_customer_id);
+
     -- Fase 3: Telegram bot subscribers
     CREATE TABLE IF NOT EXISTS telegram_users (
         id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -428,6 +441,94 @@ def save_alert_history(
     except requests.RequestException as exc:
         logger.warning("save_alert_history error: %s", exc)
         return 0
+
+
+# ─── Fase 4 — Subscription plan helpers ──────────────────────────────────────
+
+def get_user_plan(
+    supabase_url: str,
+    anon_key: str,
+    wallet_address: str,
+) -> str:
+    """
+    Return the subscription plan for a wallet address.
+    Returns "free" if the user is not found or on any error.
+    """
+    url = f"{supabase_url.rstrip('/')}/rest/v1/users"
+    params = {
+        "select": "plan",
+        "wallet_address": f"eq.{wallet_address.lower()}",
+        "limit": "1",
+    }
+    try:
+        resp = requests.get(url, headers=_headers(anon_key), params=params, timeout=_TIMEOUT)
+        if resp.status_code == 200:
+            rows = resp.json()
+            if rows:
+                return rows[0].get("plan", "free")
+        return "free"
+    except requests.RequestException:
+        return "free"
+
+
+def upsert_user_plan(
+    supabase_url: str,
+    anon_key: str,
+    wallet_address: str,
+    plan: str,
+    stripe_customer_id: str = "",
+    stripe_subscription_id: str = "",
+) -> bool:
+    """
+    Insert or update subscription data for a wallet address.
+    Returns True on success, False on any error.
+    """
+    url = f"{supabase_url.rstrip('/')}/rest/v1/users"
+    payload: dict = {
+        "wallet_address": wallet_address.lower(),
+        "plan": plan,
+        "plan_updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if stripe_customer_id:
+        payload["stripe_customer_id"] = stripe_customer_id
+    if stripe_subscription_id:
+        payload["stripe_subscription_id"] = stripe_subscription_id
+    try:
+        resp = requests.post(
+            url,
+            headers={**_headers(anon_key), "Prefer": "resolution=merge-duplicates,return=minimal"},
+            data=json.dumps(payload),
+            timeout=_TIMEOUT,
+        )
+        return resp.status_code in (200, 201)
+    except requests.RequestException as exc:
+        logger.warning("upsert_user_plan error: %s", exc)
+        return False
+
+
+def get_stripe_customer_id(
+    supabase_url: str,
+    anon_key: str,
+    wallet_address: str,
+) -> Optional[str]:
+    """
+    Return the Stripe customer ID for a wallet, or None if not set.
+    """
+    url = f"{supabase_url.rstrip('/')}/rest/v1/users"
+    params = {
+        "select": "stripe_customer_id",
+        "wallet_address": f"eq.{wallet_address.lower()}",
+        "limit": "1",
+    }
+    try:
+        resp = requests.get(url, headers=_headers(anon_key), params=params, timeout=_TIMEOUT)
+        if resp.status_code == 200:
+            rows = resp.json()
+            if rows:
+                return rows[0].get("stripe_customer_id") or None
+        return None
+    except requests.RequestException:
+        return None
 
 
 def get_alert_history(
