@@ -86,7 +86,7 @@ async function connectWallet() {
     url.searchParams.delete('{param_iat}');
     window.parent.location.replace(url.toString());
   } catch (err) {
-    statusEl.textContent = 'Connection refused.';
+    statusEl.textContent = err.message || 'Connection refused.';
     statusEl.style.color = '#ff6b6b';
     btn.disabled = false;
     btn.style.opacity = '1';
