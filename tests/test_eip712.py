@@ -163,7 +163,9 @@ class TestBuildEip712Message:
         msg = build_eip712_message(TEST_ADDRESS, TEST_NONCE, TEST_ISSUED_AT)
         assert msg["message"]["appName"] == "polyMad"
 
-    def test_domain_chain_id_is_polygon(self):
+    def test_domain_has_no_chain_id(self):
+        """chainId is intentionally absent — auth messages are chain-agnostic."""
         from src.api.security.eip712 import build_eip712_message, EIP712_DOMAIN
         msg = build_eip712_message(TEST_ADDRESS, TEST_NONCE, TEST_ISSUED_AT)
-        assert msg["domain"]["chainId"] == 137
+        assert "chainId" not in msg["domain"]
+        assert "verifyingContract" not in msg["domain"]

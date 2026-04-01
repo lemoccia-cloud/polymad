@@ -13,16 +13,15 @@ from typing import Any
 EIP712_DOMAIN: dict[str, Any] = {
     "name": "polyMad",
     "version": "1",
-    "chainId": 137,  # Polygon mainnet
-    "verifyingContract": "0x0000000000000000000000000000000000000000",
+    # chainId intentionally omitted: this is a sign-in message, not a transaction.
+    # MetaMask requires chainId to match the active network, which would break
+    # users on any chain other than Polygon. The nonce provides replay protection.
 }
 
 EIP712_TYPES: dict[str, Any] = {
     "EIP712Domain": [
-        {"name": "name",              "type": "string"},
-        {"name": "version",           "type": "string"},
-        {"name": "chainId",           "type": "uint256"},
-        {"name": "verifyingContract", "type": "address"},
+        {"name": "name",    "type": "string"},
+        {"name": "version", "type": "string"},
     ],
     "Authentication": [
         {"name": "wallet",   "type": "address"},
