@@ -32,6 +32,17 @@ from src.models.market import WeatherForecast, OpportunityResult
 from src.components.wallet import render_wallet_sidebar, render_wallet_tab, process_auth_flow
 from src.components.filters import render_filter_bar
 from src.components.auth_bridge import get_authenticated_plan, get_checkout_url
+
+
+def _app_base_url() -> str:
+    """Return the app's public base URL, detected dynamically from the request host."""
+    try:
+        host = st.context.headers.get("host", "")
+        if host:
+            return f"https://{host}"
+    except Exception:
+        pass
+    return os.environ.get("APP_BASE_URL", "https://polymad-production.up.railway.app")
 from src.notifications import send_alert_email
 from src.data.supabase_client import (
     save_scan, get_scan_history, build_alerts_summary,
@@ -1210,8 +1221,8 @@ def render_sidebar(th: dict):
             if st.button("Pro — $19/mês", use_container_width=True, type="secondary"):
                 _url = get_checkout_url(
                     "pro",
-                    success_url="https://polymad.up.railway.app/?plan_success=1",
-                    cancel_url="https://polymad.up.railway.app/",
+                    success_url=f"{_app_base_url()}/?plan_success=1",
+                    cancel_url=f"{_app_base_url()}/",
                 )
                 if _url:
                     st.markdown(f'<meta http-equiv="refresh" content="0; url={_url}">', unsafe_allow_html=True)
@@ -1222,8 +1233,8 @@ def render_sidebar(th: dict):
             if st.button("Trader — $49/mês", use_container_width=True, type="secondary"):
                 _url = get_checkout_url(
                     "trader",
-                    success_url="https://polymad.up.railway.app/?plan_success=1",
-                    cancel_url="https://polymad.up.railway.app/",
+                    success_url=f"{_app_base_url()}/?plan_success=1",
+                    cancel_url=f"{_app_base_url()}/",
                 )
                 if _url:
                     st.markdown(f'<meta http-equiv="refresh" content="0; url={_url}">', unsafe_allow_html=True)
