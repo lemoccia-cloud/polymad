@@ -51,6 +51,9 @@ class _RequestSizeLimitMiddleware(BaseHTTPMiddleware):
     MAX_BODY_BYTES = 4096
 
     async def dispatch(self, request: Request, call_next):
+        # Stripe webhook payloads can be 5–15 KB; HMAC validates authenticity.
+        if request.url.path == "/api/webhooks/stripe":
+            return await call_next(request)
         content_length = request.headers.get("content-length")
         if content_length and int(content_length) > self.MAX_BODY_BYTES:
             return Response("Request body too large", status_code=413)

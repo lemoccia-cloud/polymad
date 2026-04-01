@@ -145,18 +145,21 @@ def verify_signature(
         st.session_state[_TOKEN_EXP_KEY] = expires_at
         st.session_state[_ADDRESS_KEY] = addr_lower
         st.session_state[_PLAN_KEY] = plan
-        # Persist JWT in sessionStorage so it survives page reloads
-        _components.html(
-            f"<script>"
-            f"sessionStorage.setItem('_polymad_jwt',{repr(token)});"
-            f"sessionStorage.setItem('_polymad_jwt_exp',{repr(expires_at)});"
-            f"sessionStorage.setItem('_polymad_addr',{repr(addr_lower)});"
-            f"</script>",
-            height=0,
-        )
+        # sessionStorage persistence is handled by the declare_component (same-origin
+        # iframe) in wallet.py — _components.html() uses a null-origin srcdoc iframe
+        # whose sessionStorage is isolated from the parent page, so it cannot be used.
         logger.info("auth_bridge: authentication successful plan=%s", plan)
         return True
     return False
+
+
+def get_last_token() -> tuple:
+    """Return (token, expires_at, addr_lower) from session_state, or ('','','')."""
+    return (
+        st.session_state.get(_TOKEN_KEY, ""),
+        st.session_state.get(_TOKEN_EXP_KEY, ""),
+        st.session_state.get(_ADDRESS_KEY, ""),
+    )
 
 
 def is_authenticated() -> bool:
@@ -198,17 +201,14 @@ def get_authenticated_plan() -> str:
 
 
 def clear_auth() -> None:
-    """Remove all authentication state from session_state and sessionStorage (sign-out)."""
+    """
+    Remove all authentication state from session_state.
+    sessionStorage clearing is handled by the declare_component in wallet.py
+    (phase 4 — clear_storage) since only same-origin iframes can access
+    window.parent.sessionStorage reliably.
+    """
     for key in (_TOKEN_KEY, _TOKEN_EXP_KEY, _ADDRESS_KEY, _PLAN_KEY):
         st.session_state.pop(key, None)
-    _components.html(
-        "<script>"
-        "sessionStorage.removeItem('_polymad_jwt');"
-        "sessionStorage.removeItem('_polymad_jwt_exp');"
-        "sessionStorage.removeItem('_polymad_addr');"
-        "</script>",
-        height=0,
-    )
 
 
 def get_checkout_url(plan: str, success_url: str, cancel_url: str) -> Optional[str]:

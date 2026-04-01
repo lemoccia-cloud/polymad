@@ -1,22 +1,34 @@
 """
 MetaMask wallet connection component for polyMad Streamlit dashboard.
 
-Authentication flow (EIP-712, 2-phase) — uses declare_component so data
-flows back to Python via postMessage (Streamlit.setComponentValue), avoiding
-the iframe sandbox restriction that blocks window.parent.location navigation.
+Authentication flow — uses declare_component (same-origin iframe) so data
+flows via postMessage (setComponentValue) and sessionStorage is accessible.
+
+  Phase 0 — Restore check (once per session)
+    JS reads window.parent.sessionStorage → returns {action:"restore", jwt} or {action:"none"}
+    Python: if restore → validate JWT locally → set session_state → rerun (user stays logged in)
 
   Phase 1 — Connect
-    JS → MetaMask eth_requestAccounts → setComponentValue({action:"connected", addr})
-    Python reads return value, calls FastAPI /auth/nonce, stores in session_state
+    JS → MetaMask eth_accounts (passive) or eth_requestAccounts (button click)
+    → setComponentValue({action:"connected", addr})
+    Python → request_nonce → Phase 2
 
   Phase 2 — Sign
-    Python embeds typed_data_json in component args
-    JS → MetaMask eth_signTypedData_v4 → setComponentValue({action:"signed", sig})
-    Python reads return value, calls auth_bridge.verify_signature() → JWT
+    Python embeds typed_data_json → JS → eth_signTypedData_v4
+    → setComponentValue({action:"signed", sig})
+    Python → verify_signature → JWT stored → Phase 3
+
+  Phase 3 — Save JWT
+    Python passes token/expires_at/addr → JS writes to window.parent.sessionStorage
+    Runs once after successful login so the session survives page reloads / Stripe redirect.
+
+  Phase 4 — Clear sessionStorage (sign-out)
+    JS removes all _polymad_* keys from window.parent.sessionStorage
 
 Security:
   - Authenticated address comes exclusively from the verified JWT (server-side).
-  - JWT stored only in st.session_state (server-side, never in browser).
+  - JWT stored only in st.session_state (server-side).
+  - sessionStorage copy is used only for restore across page reloads (convenience).
   - Typed data / nonce generated fresh per session; replayed values fail server-side.
 """
 import json
@@ -52,34 +64,72 @@ _wallet_component = components.declare_component(
 )
 
 # Session state keys for the auth flow state machine
-_PHASE_KEY      = "_wallet_phase"       # None | "connecting" | "signing"
-_ADDR_KEY       = "_wallet_pending_addr"
-_NONCE_KEY      = "_wallet_pending_nonce"
-_TYPED_DATA_KEY = "_wallet_typed_data_json"
-_IAT_KEY        = "_wallet_issued_at"
+_PHASE_KEY       = "_wallet_phase"       # None | "restoring" | "connecting" | "signing" | "saving"
+_ADDR_KEY        = "_wallet_pending_addr"
+_NONCE_KEY       = "_wallet_pending_nonce"
+_TYPED_DATA_KEY  = "_wallet_typed_data_json"
+_IAT_KEY         = "_wallet_issued_at"
+_RESTORE_DONE    = "_wallet_restore_checked"
 
 
 # ── Auth flow state machine ──────────────────────────────────────────────────
 
 def process_auth_flow() -> None:
     """
-    Drive the 2-phase EIP-712 authentication flow.
+    Drive the full EIP-712 authentication flow including sessionStorage
+    persistence so the session survives page reloads and Stripe redirects.
+
     Call once per Streamlit script run (top of main).
-
-    Phase 1 button is rendered inside the sidebar (single instance, no duplicates).
-    Phase 2 sign button is rendered in the main area.
-
-    State machine:
-      already authenticated      → nothing to do
-      phase None / "connecting"  → render Phase 1 connect button (in sidebar)
-        component returns {action:"connected", addr} → request nonce → Phase 2
-      phase "signing"            → render Phase 2 sign button (in main area)
-        component returns {action:"signed", sig}    → verify → JWT stored → done
     """
+    phase = st.session_state.get(_PHASE_KEY)
+
+    # ── Phase "clearing": remove JWT from sessionStorage on sign-out ─────────
+    if phase == "clearing":
+        result = _wallet_component(phase=4, key="wallet_clear")
+        if isinstance(result, dict) and result.get("action") == "cleared":
+            st.session_state.pop(_PHASE_KEY, None)
+            st.session_state[_RESTORE_DONE] = False  # allow restore check next login
+        return
+
+    # ── Phase "saving": persist JWT to sessionStorage after successful auth ────
+    if phase == "saving":
+        token, expires_at, addr = auth_bridge.get_last_token()
+        result = _wallet_component(
+            phase=3,
+            jwt=token,
+            expires_at=expires_at,
+            addr=addr,
+            key="wallet_save",
+        )
+        if isinstance(result, dict) and result.get("action") == "saved":
+            st.session_state.pop(_PHASE_KEY, None)
+            # No rerun needed — auth is already set, just saved to storage
+        return
+
+    # ── Already authenticated — nothing more to do ────────────────────────────
     if auth_bridge.is_authenticated():
         return
 
-    phase = st.session_state.get(_PHASE_KEY)
+    # ── Phase 0: Restore check (once per session) ─────────────────────────────
+    if not st.session_state.get(_RESTORE_DONE):
+        st.session_state[_RESTORE_DONE] = True
+        result = _wallet_component(phase=0, key="wallet_restore")
+        if isinstance(result, dict) and result.get("action") == "restore":
+            jwt = result.get("jwt", "")
+            addr = result.get("addr", "")
+            expires_at = result.get("expires_at", "")
+            from src.api.security.jwt_handler import decode_access_token_full
+            decoded = decode_access_token_full(jwt) if jwt else None
+            if decoded:
+                verified_addr, plan = decoded
+                st.session_state[auth_bridge._TOKEN_KEY]     = jwt
+                st.session_state[auth_bridge._TOKEN_EXP_KEY] = expires_at
+                st.session_state[auth_bridge._ADDRESS_KEY]   = verified_addr
+                st.session_state[auth_bridge._PLAN_KEY]      = plan
+                st.rerun()
+        # Whether restore succeeded or not, fall through to connect flow
+        if auth_bridge.is_authenticated():
+            return
 
     # ── Phase 1: Connect (rendered in sidebar — one canonical location) ───────
     if phase is None or phase == "connecting":
@@ -138,6 +188,8 @@ def process_auth_flow() -> None:
                 issued_at=issued_at,
             )
             if ok:
+                # Transition to "saving" so next run persists JWT to sessionStorage
+                st.session_state[_PHASE_KEY] = "saving"
                 st.rerun()
             else:
                 st.error("Authentication failed. Please try again.")
@@ -185,6 +237,8 @@ def render_auth_status() -> None:
     if st.sidebar.button("Sign out", use_container_width=True):
         auth_bridge.clear_auth()
         _reset_phase()
+        # Clear sessionStorage via same-origin component (phase 4)
+        st.session_state[_PHASE_KEY] = "clearing"
         st.rerun()
 
 

@@ -47,7 +47,7 @@ from src.notifications import send_alert_email
 from src.data.supabase_client import (
     save_scan, get_scan_history, build_alerts_summary,
     save_prediction, get_unresolved_predictions, mark_resolved, get_backtesting_data,
-    save_alert_history,
+    save_alert_history, get_user_plan,
 )
 
 # ─── Page config ─────────────────────────────────────────────────────────────
@@ -1598,6 +1598,22 @@ def main():
     # Drive EIP-712 auth state machine (nonce request + signature verification)
     # Must run before any wallet-gated UI is rendered.
     process_auth_flow()
+
+    # ── Post-payment plan refresh ─────────────────────────────────────────────
+    # After Stripe redirects back with ?plan_success=1, the restored JWT still
+    # carries the old plan claim. Re-fetch from Supabase to get the updated plan.
+    if st.query_params.get("plan_success") and auth_bridge.is_authenticated():
+        try:
+            _supa_url = st.secrets.get("SUPABASE_URL", "")
+            _supa_key = st.secrets.get("SUPABASE_ANON_KEY", "")
+            _addr = auth_bridge.get_authenticated_address() or ""
+            if _supa_url and _supa_key and _addr:
+                _fresh_plan = get_user_plan(_supa_url, _supa_key, _addr)
+                st.session_state[auth_bridge._PLAN_KEY] = _fresh_plan
+        except Exception:
+            pass
+        del st.query_params["plan_success"]
+        st.rerun()
 
     th = get_theme()
     inject_css(th)

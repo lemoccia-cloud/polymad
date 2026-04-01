@@ -40,18 +40,17 @@
     function setComponentValue(value) {
       _send("streamlit:setComponentValue", { value: value, dataType: "json" });
     }
-    function setFrameHeight() {
-      _send("streamlit:setFrameHeight", { height: document.body.scrollHeight + 10 });
+    function setFrameHeight(h) {
+      _send("streamlit:setFrameHeight", { height: h !== undefined ? h : document.body.scrollHeight + 10 });
     }
 
     // ── State ──────────────────────────────────────────────────────────────────
     var _args = null;
-    var _phase1Done = false;  // prevent duplicate "connected" events
+    var _phase1Done = false;
+    var _phase0Done = false;
 
-    // Tell Streamlit we're ready
     _send("streamlit:componentReady", { apiVersion: 1 });
 
-    // Listen for render messages
     window.addEventListener("message", function (evt) {
       if (!evt.data || evt.data.type !== "streamlit:render") return;
       var newArgs = evt.data.args || {};
@@ -63,21 +62,101 @@
       }
     });
 
-    // ── Render ─────────────────────────────────────────────────────────────────
+    // ── Render dispatcher ──────────────────────────────────────────────────────
     function renderComponent() {
       if (!_args) return;
       var root = document.getElementById("root");
-      if (_args.phase === 1) {
+      var p = _args.phase;
+
+      if (p === 0) {
+        // Restore check: read sessionStorage and report back once
+        root.innerHTML = "";
+        setFrameHeight(0);
+        if (!_phase0Done) {
+          _phase0Done = true;
+          doRestoreCheck();
+        }
+      } else if (p === 1) {
         root.innerHTML = buildPhase1();
         setTimeout(autoCheck, 100);
-      } else if (_args.phase === 2) {
+        setTimeout(setFrameHeight, 60);
+      } else if (p === 2) {
         root.innerHTML = buildPhase2();
+        setTimeout(setFrameHeight, 60);
+      } else if (p === 3) {
+        // Save JWT to parent sessionStorage
+        root.innerHTML = "";
+        setFrameHeight(0);
+        doSaveJwt();
+      } else if (p === 4) {
+        // Clear JWT from parent sessionStorage (sign-out)
+        root.innerHTML = "";
+        setFrameHeight(0);
+        doClearStorage();
       } else {
         root.innerHTML = "";
+        setFrameHeight(0);
       }
-      setTimeout(setFrameHeight, 60);
     }
 
+    // ── Phase 0: Restore check ─────────────────────────────────────────────────
+    function doRestoreCheck() {
+      try {
+        var ss = window.parent.sessionStorage;
+        var jwt = ss.getItem("_polymad_jwt");
+        var exp = ss.getItem("_polymad_jwt_exp");
+        var addr = ss.getItem("_polymad_addr");
+        if (!jwt) {
+          setComponentValue({ action: "none" });
+          return;
+        }
+        // Check expiry client-side
+        if (exp) {
+          try {
+            if (new Date(exp) <= new Date()) {
+              ss.removeItem("_polymad_jwt");
+              ss.removeItem("_polymad_jwt_exp");
+              ss.removeItem("_polymad_addr");
+              setComponentValue({ action: "none" });
+              return;
+            }
+          } catch (_) {}
+        }
+        setComponentValue({ action: "restore", jwt: jwt, addr: addr || "", expires_at: exp || "" });
+      } catch (e) {
+        // sessionStorage inaccessible (private mode etc.)
+        setComponentValue({ action: "none" });
+      }
+    }
+
+    // ── Phase 3: Save JWT ──────────────────────────────────────────────────────
+    function doSaveJwt() {
+      try {
+        var ss = window.parent.sessionStorage;
+        var jwt = _args.jwt || "";
+        var exp = _args.expires_at || "";
+        var addr = _args.addr || "";
+        if (jwt) {
+          ss.setItem("_polymad_jwt", jwt);
+          ss.setItem("_polymad_jwt_exp", exp);
+          ss.setItem("_polymad_addr", addr);
+        }
+      } catch (_) {}
+      setComponentValue({ action: "saved" });
+    }
+
+    // ── Phase 4: Clear sessionStorage ─────────────────────────────────────────
+    function doClearStorage() {
+      try {
+        var ss = window.parent.sessionStorage;
+        ss.removeItem("_polymad_jwt");
+        ss.removeItem("_polymad_jwt_exp");
+        ss.removeItem("_polymad_addr");
+      } catch (_) {}
+      setComponentValue({ action: "cleared" });
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
     function esc(s) {
       return String(s || "")
         .replace(/&/g, "&amp;")
@@ -112,7 +191,7 @@
       );
     }
 
-    // ── Phase 1 ────────────────────────────────────────────────────────────────
+    // ── Phase 1: Connect ───────────────────────────────────────────────────────
     async function autoCheck() {
       if (_phase1Done) return;
       var eth = window.parent && window.parent.ethereum;
@@ -154,7 +233,7 @@
       }
     }
 
-    // ── Phase 2 ────────────────────────────────────────────────────────────────
+    // ── Phase 2: Sign ──────────────────────────────────────────────────────────
     async function signMessage() {
       var btn = document.getElementById("sign-btn");
       var statusEl = document.getElementById("sign-status");
