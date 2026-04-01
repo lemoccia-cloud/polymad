@@ -2,13 +2,17 @@
 E2E tests for the wallet authentication flow.
 
 These tests run against a live Streamlit + FastAPI stack.
-They are skipped automatically if either process fails to start.
+They are skipped automatically if either process fails to start or if
+playwright is not installed.
 
-Test scenarios:
-  1. Unauthenticated dashboard shows connect prompt, not portfolio data
-  2. Connect wallet → MetaMask mock → sign → JWT stored → portfolio tab visible
-  3. URL params are cleared after successful authentication
-  4. Sign-out removes JWT and shows connect prompt again
+Auth flow (component-based, no URL params):
+  Phase 1 — Streamlit renders polymad_wallet component (phase=1)
+            JS calls window.parent.ethereum.request({method:"eth_accounts"})
+            → setComponentValue({action:"connected", addr})
+            → Python requests nonce → transitions to Phase 2
+  Phase 2 — Component rendered with typed_data_json embedded
+            JS calls eth_signTypedData_v4 → setComponentValue({action:"signed", sig})
+            → Python verifies → JWT stored → authenticated
 """
 import time
 
@@ -36,50 +40,55 @@ class TestUnauthenticatedState:
         # Portfolio value header should not appear without auth
         assert "portfolio_value" not in content.lower() or "Connect" in content
 
-    def test_wallet_address_not_in_url_on_load(self, mock_metamask_page):
+    def test_no_auth_params_in_url_on_load(self, mock_metamask_page):
+        """Clean load must not have any auth-related URL params."""
         page = mock_metamask_page
         page.goto(STREAMLIT_URL, wait_until="networkidle", timeout=30000)
-        assert "wallet_address" not in page.url
+        # None of the old URL-param auth keys should be present
+        for param in ("_w_addr", "_w_sig", "_w_iat", "_w_jwt", "wallet_address"):
+            assert param not in page.url
 
 
 class TestAuthFlow:
     def test_connect_button_visible(self, mock_metamask_page):
+        """Phase 1 component renders the Connect MetaMask button."""
         page = mock_metamask_page
         page.goto(STREAMLIT_URL, wait_until="networkidle", timeout=30000)
         page.wait_for_timeout(3000)
-        # The connect button should be somewhere in the rendered page
         content = page.content()
         assert "Connect" in content or "MetaMask" in content
 
-    def test_full_auth_flow_sets_pending_nonce(self, mock_metamask_page):
+    def test_autoconnect_triggers_phase2(self, mock_metamask_page):
         """
-        Simulate Phase 1: address arrives via URL param → Streamlit requests nonce.
-        We verify the nonce was stored in session_state by checking the sign button
-        appears in the rendered output.
+        When MetaMask has an account (eth_accounts returns non-empty),
+        the component auto-connects and Streamlit transitions to Phase 2
+        (the Sign button appears).
         """
         page = mock_metamask_page
-        # Inject address param directly (simulating Phase 1 completion)
-        url = f"{STREAMLIT_URL}/?_w_addr={TEST_ADDRESS}"
-        page.goto(url, wait_until="networkidle", timeout=30000)
-        page.wait_for_timeout(5000)
+        page.goto(STREAMLIT_URL, wait_until="networkidle", timeout=30000)
+        # Wait for: component load → autoCheck → setComponentValue → Streamlit rerun → Phase 2
+        page.wait_for_timeout(6000)
         content = page.content()
-        # After Phase 1, the sign button or sign instructions should appear
-        # (exact text depends on the rendered HTML component)
-        assert "Sign" in content or "sign" in content or "authenticate" in content.lower()
+        # Phase 2 shows "Sign" / "authenticate" / "signature"
+        assert (
+            "Sign" in content
+            or "sign" in content
+            or "authenticate" in content.lower()
+        )
 
-    def test_url_does_not_contain_wallet_address_after_auth(self, mock_metamask_page):
-        """After authentication, the _w_addr param must be cleared from the URL."""
+    def test_no_auth_url_params_during_flow(self, mock_metamask_page):
+        """
+        Auth data must never appear as URL query params at any point
+        (security: no address/signature leakage in browser history).
+        """
         page = mock_metamask_page
-        # Start with address in URL
-        url = f"{STREAMLIT_URL}/?_w_addr={TEST_ADDRESS}"
-        page.goto(url, wait_until="networkidle", timeout=30000)
-        page.wait_for_timeout(3000)
-        # The Streamlit app should have consumed and cleared the param
-        # Either the param is gone, or the sign component appeared (indicating Phase 1 completed)
-        # The original wallet_address param style should never appear
-        assert "wallet_address=" not in page.url
+        page.goto(STREAMLIT_URL, wait_until="networkidle", timeout=30000)
+        page.wait_for_timeout(6000)
+        url = page.url
+        for param in ("_w_addr", "_w_sig", "_w_iat", "_w_jwt"):
+            assert param not in url, f"Leaked auth param in URL: {param}"
 
-    def test_security_wallet_address_param_ignored(self, mock_metamask_page):
+    def test_security_legacy_wallet_address_param_ignored(self, mock_metamask_page):
         """
         SECURITY: Legacy ?wallet_address= param must NOT trigger authentication.
         An attacker cannot gain access by setting a victim's address in the URL.
@@ -90,6 +99,5 @@ class TestAuthFlow:
         page.goto(url, wait_until="networkidle", timeout=30000)
         page.wait_for_timeout(3000)
         content = page.content()
-        # The dashboard should not show authenticated portfolio for the victim
-        # The connect button should still be visible (or the page shows no portfolio)
+        # The dashboard must not show an authenticated state for the victim
         assert "Sign out" not in content or "portfolio_value" not in content.lower()
