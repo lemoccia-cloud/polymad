@@ -66,11 +66,14 @@ def process_auth_flow() -> None:
     Drive the 2-phase EIP-712 authentication flow.
     Call once per Streamlit script run (top of main).
 
+    Phase 1 button is rendered inside the sidebar (single instance, no duplicates).
+    Phase 2 sign button is rendered in the main area.
+
     State machine:
       already authenticated      → nothing to do
-      phase None / "connecting"  → render Phase 1 connect button
+      phase None / "connecting"  → render Phase 1 connect button (in sidebar)
         component returns {action:"connected", addr} → request nonce → Phase 2
-      phase "signing"            → render Phase 2 sign button (typed data embedded)
+      phase "signing"            → render Phase 2 sign button (in main area)
         component returns {action:"signed", sig}    → verify → JWT stored → done
     """
     if auth_bridge.is_authenticated():
@@ -78,14 +81,15 @@ def process_auth_flow() -> None:
 
     phase = st.session_state.get(_PHASE_KEY)
 
-    # ── Phase 1: Connect ──────────────────────────────────────────────────────
+    # ── Phase 1: Connect (rendered in sidebar — one canonical location) ───────
     if phase is None or phase == "connecting":
-        result = _wallet_component(
-            phase=1,
-            connect_label="Connect MetaMask",
-            status_text="",
-            key="wallet_p1",
-        )
+        with st.sidebar:
+            result = _wallet_component(
+                phase=1,
+                connect_label="Connect MetaMask",
+                status_text="",
+                key="wallet_p1",
+            )
         if isinstance(result, dict) and result.get("action") == "connected":
             import re
             addr = (result.get("addr") or "").lower()
@@ -93,7 +97,7 @@ def process_auth_flow() -> None:
                 return
             nonce = auth_bridge.request_nonce(addr)
             if not nonce:
-                st.error("Could not reach authentication server. Please try again.")
+                st.sidebar.error("Could not reach auth server. Please try again.")
                 return
             issued_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             typed_data = build_eip712_message(addr, nonce, issued_at)
@@ -105,11 +109,11 @@ def process_auth_flow() -> None:
             st.rerun()
         return
 
-    # ── Phase 2: Sign ─────────────────────────────────────────────────────────
+    # ── Phase 2: Sign (rendered in main area) ─────────────────────────────────
     if phase == "signing":
-        addr           = st.session_state.get(_ADDR_KEY, "")
-        nonce          = st.session_state.get(_NONCE_KEY, "")
-        issued_at      = st.session_state.get(_IAT_KEY, "")
+        addr            = st.session_state.get(_ADDR_KEY, "")
+        nonce           = st.session_state.get(_NONCE_KEY, "")
+        issued_at       = st.session_state.get(_IAT_KEY, "")
         typed_data_json = st.session_state.get(_TYPED_DATA_KEY, "")
 
         if not (addr and nonce and issued_at and typed_data_json):
@@ -148,13 +152,11 @@ def _reset_phase() -> None:
 # ── Public component functions ───────────────────────────────────────────────
 
 def render_metamask_button(connect_label: str = "Connect MetaMask", status_text: str = "") -> None:
-    """Render the Phase 1 MetaMask connect button inline."""
-    _wallet_component(
-        phase=1,
-        connect_label=connect_label,
-        status_text=status_text,
-        key=f"wallet_inline_{connect_label[:10]}",
-    )
+    """
+    Kept for backward compatibility — shows a visual prompt only.
+    The actual auth flow is driven by process_auth_flow() (sidebar button).
+    """
+    st.info(f"🦊 {connect_label} — use the sidebar button to connect.")
 
 
 def render_auth_status() -> None:
@@ -223,13 +225,14 @@ def render_wallet_sidebar(t: "callable") -> str:
     """
     Render wallet authentication section in sidebar.
     Returns current authenticated wallet address (or empty string).
+
+    The Phase 1 connect button is rendered by process_auth_flow() (called at
+    the top of main). This function only renders the post-auth status badge
+    and sign-out button.
     """
     address = auth_bridge.get_authenticated_address() or ""
     if address:
         render_auth_status()
-    else:
-        st.sidebar.markdown("**Connect Wallet**")
-        render_metamask_button(connect_label=t("connect_wallet"))
     return address
 
 
@@ -247,8 +250,7 @@ def render_wallet_tab(
     but no JWT is present (backward-compatible path).
     """
     if not address:
-        st.info(f"🦊 {t('connect_wallet')} to see your portfolio.")
-        render_metamask_button(connect_label=t("connect_wallet"), status_text="")
+        st.info(f"🦊 {t('connect_wallet')} — use the **Connect MetaMask** button in the sidebar.")
         return
 
     # Read Supabase secrets (optional — graceful if not configured)
