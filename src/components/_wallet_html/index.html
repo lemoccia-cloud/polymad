@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: transparent; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 4px; }
+    button {
+      border: none; cursor: pointer; width: 100%;
+      padding: 10px 20px; border-radius: 8px;
+      font-size: 14px; font-weight: 600; color: white;
+      transition: opacity 0.2s;
+    }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    button:hover:not(:disabled) { opacity: 0.85; }
+    #status { margin-top: 8px; font-size: 12px; color: #aaa; text-align: center; min-height: 18px; }
+    #sign-status { margin-top: 8px; font-size: 12px; color: #aaa; text-align: center; min-height: 18px; }
+    .info-box {
+      background: #1e2530; border: 1px solid #3b82f6;
+      border-radius: 8px; padding: 14px; margin-bottom: 12px;
+    }
+    .info-title { color: #60a5fa; font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+    .info-addr { color: #aaa; font-size: 11px; }
+    .info-addr span { font-family: monospace; }
+    .info-note { color: #888; font-size: 10px; margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script>
+    // ── Streamlit component messaging protocol ─────────────────────────────────
+    function _send(type, extra) {
+      window.parent.postMessage(
+        Object.assign({ isStreamlitMessage: true, type: type }, extra || {}),
+        "*"
+      );
+    }
+    function setComponentValue(value) {
+      _send("streamlit:setComponentValue", { value: value, dataType: "json" });
+    }
+    function setFrameHeight() {
+      _send("streamlit:setFrameHeight", { height: document.body.scrollHeight + 10 });
+    }
+
+    // ── State ──────────────────────────────────────────────────────────────────
+    var _args = null;
+    var _phase1Done = false;  // prevent duplicate "connected" events
+
+    // Tell Streamlit we're ready
+    _send("streamlit:componentReady", { apiVersion: 1 });
+
+    // Listen for render messages
+    window.addEventListener("message", function (evt) {
+      if (!evt.data || evt.data.type !== "streamlit:render") return;
+      var newArgs = evt.data.args || {};
+      var phaseChanged = !_args || (_args.phase !== newArgs.phase);
+      _args = newArgs;
+      if (phaseChanged) {
+        _phase1Done = false;
+        renderComponent();
+      }
+    });
+
+    // ── Render ─────────────────────────────────────────────────────────────────
+    function renderComponent() {
+      if (!_args) return;
+      var root = document.getElementById("root");
+      if (_args.phase === 1) {
+        root.innerHTML = buildPhase1();
+        setTimeout(autoCheck, 100);
+      } else if (_args.phase === 2) {
+        root.innerHTML = buildPhase2();
+      } else {
+        root.innerHTML = "";
+      }
+      setTimeout(setFrameHeight, 60);
+    }
+
+    function esc(s) {
+      return String(s || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+
+    function buildPhase1() {
+      var label = esc(_args.connect_label || "Connect MetaMask");
+      var status = esc(_args.status_text || "");
+      return (
+        '<button id="connect-btn" onclick="connectWallet()" ' +
+        'style="background:linear-gradient(135deg,#f6851b,#e2761b);">' +
+        label + "</button>" +
+        '<div id="status">' + status + "</div>"
+      );
+    }
+
+    function buildPhase2() {
+      var addr = esc(_args.address || "");
+      var short = addr ? addr.slice(0, 6) + "..." + addr.slice(-4) : "";
+      return (
+        '<div class="info-box">' +
+        '  <div class="info-title">&#x1F510; Sign to authenticate</div>' +
+        '  <div class="info-addr">Wallet: <span>' + short + "</span></div>" +
+        '  <div class="info-note">Proves ownership of your wallet. No transaction, no gas.</div>' +
+        "</div>" +
+        '<button id="sign-btn" onclick="signMessage()" ' +
+        'style="background:linear-gradient(135deg,#3b82f6,#2563eb);">' +
+        "&#x270D;&#xFE0F; Sign Message</button>" +
+        '<div id="sign-status"></div>'
+      );
+    }
+
+    // ── Phase 1 ────────────────────────────────────────────────────────────────
+    async function autoCheck() {
+      if (_phase1Done) return;
+      var eth = window.parent && window.parent.ethereum;
+      if (!eth) return;
+      try {
+        var accounts = await eth.request({ method: "eth_accounts" });
+        if (accounts && accounts.length > 0 && !_phase1Done) {
+          _phase1Done = true;
+          setComponentValue({ action: "connected", addr: accounts[0] });
+        }
+      } catch (_) {}
+    }
+
+    async function connectWallet() {
+      if (_phase1Done) return;
+      var btn = document.getElementById("connect-btn");
+      var statusEl = document.getElementById("status");
+      var eth = window.parent && window.parent.ethereum;
+      if (!eth) {
+        statusEl.textContent = "MetaMask not detected. Please install it.";
+        statusEl.style.color = "#ff6b6b";
+        return;
+      }
+      try {
+        btn.disabled = true;
+        statusEl.textContent = "Connecting...";
+        statusEl.style.color = "#aaa";
+        var accounts = await eth.request({ method: "eth_requestAccounts" });
+        if (accounts && accounts.length > 0 && !_phase1Done) {
+          _phase1Done = true;
+          statusEl.textContent = "Connected!";
+          statusEl.style.color = "#00c896";
+          setComponentValue({ action: "connected", addr: accounts[0] });
+        }
+      } catch (err) {
+        statusEl.textContent = err.message || "Connection refused.";
+        statusEl.style.color = "#ff6b6b";
+        btn.disabled = false;
+      }
+    }
+
+    // ── Phase 2 ────────────────────────────────────────────────────────────────
+    async function signMessage() {
+      var btn = document.getElementById("sign-btn");
+      var statusEl = document.getElementById("sign-status");
+      var eth = window.parent && window.parent.ethereum;
+      if (!eth) {
+        statusEl.textContent = "MetaMask not available.";
+        statusEl.style.color = "#ff6b6b";
+        return;
+      }
+      if (!_args || !_args.typed_data_json || !_args.address) {
+        statusEl.textContent = "Missing signing data. Please refresh.";
+        statusEl.style.color = "#ff6b6b";
+        return;
+      }
+      try {
+        btn.disabled = true;
+        btn.style.opacity = "0.6";
+        statusEl.textContent = "Waiting for MetaMask signature\u2026";
+        statusEl.style.color = "#aaa";
+        var sig = await eth.request({
+          method: "eth_signTypedData_v4",
+          params: [_args.address, _args.typed_data_json]
+        });
+        statusEl.textContent = "Signature received. Verifying\u2026";
+        statusEl.style.color = "#00c896";
+        setComponentValue({ action: "signed", sig: sig });
+      } catch (err) {
+        statusEl.textContent = err.message || "Signing cancelled.";
+        statusEl.style.color = "#ff6b6b";
+        btn.disabled = false;
+        btn.style.opacity = "1";
+      }
+    }
+  </script>
+</body>
+</html>
