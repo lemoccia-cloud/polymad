@@ -70,6 +70,7 @@ _NONCE_KEY       = "_wallet_pending_nonce"
 _TYPED_DATA_KEY  = "_wallet_typed_data_json"
 _IAT_KEY         = "_wallet_issued_at"
 _RESTORE_DONE    = "_wallet_restore_checked"
+_JWT_PERSISTED   = "_wallet_jwt_persisted"  # True once JWT is saved to sessionStorage
 
 
 # ── Auth flow state machine ──────────────────────────────────────────────────
@@ -88,7 +89,8 @@ def process_auth_flow() -> None:
         result = _wallet_component(phase=4, key="wallet_clear")
         if isinstance(result, dict) and result.get("action") == "cleared":
             st.session_state.pop(_PHASE_KEY, None)
-            st.session_state[_RESTORE_DONE] = False  # allow restore check next login
+            st.session_state[_RESTORE_DONE] = False
+            st.session_state[_JWT_PERSISTED] = False
         return
 
     # ── Phase "saving": persist JWT to sessionStorage after successful auth ────
@@ -103,22 +105,17 @@ def process_auth_flow() -> None:
         )
         if isinstance(result, dict) and result.get("action") == "saved":
             st.session_state.pop(_PHASE_KEY, None)
-            # No rerun needed — auth is already set, just saved to storage
-        return
-
-    # ── Already authenticated — nothing more to do ────────────────────────────
-    if auth_bridge.is_authenticated():
+            st.session_state[_JWT_PERSISTED] = True
         return
 
     # ── Phase 0: Restore check ────────────────────────────────────────────────
-    # Always render the component so we capture its return value on every run.
-    # The JS guard (_phase0Done) prevents duplicate sessionStorage reads within
-    # the same iframe lifetime. Python reads the component value every render
-    # and processes the "restore" action only until _RESTORE_DONE is set.
+    # Rendered on every run so the component value is always captured.
+    # JS _phase0Done guard prevents duplicate sessionStorage reads.
     result = _wallet_component(phase=0, key="wallet_restore")
     if not st.session_state.get(_RESTORE_DONE):
         if isinstance(result, dict) and result.get("action") == "restore":
             st.session_state[_RESTORE_DONE] = True
+            st.session_state[_JWT_PERSISTED] = True  # already in sessionStorage
             jwt = result.get("jwt", "")
             expires_at = result.get("expires_at", "")
             from src.api.security.jwt_handler import decode_access_token_full
@@ -131,9 +128,13 @@ def process_auth_flow() -> None:
                 st.session_state[auth_bridge._PLAN_KEY]      = plan
                 st.rerun()
         elif isinstance(result, dict) and result.get("action") == "none":
-            # sessionStorage had nothing — restore check is complete
             st.session_state[_RESTORE_DONE] = True
+
+    # ── Authenticated — trigger saving if JWT not yet in sessionStorage ───────
     if auth_bridge.is_authenticated():
+        if not st.session_state.get(_JWT_PERSISTED):
+            st.session_state[_PHASE_KEY] = "saving"
+            st.rerun()
         return
 
     # ── Phase 1: Connect — UI handled by login page (_render_login_page) ────────
