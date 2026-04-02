@@ -290,8 +290,11 @@ def get_checkout_url(plan: str, success_url: str, cancel_url: str) -> Optional[s
         )
         resp.raise_for_status()
         return resp.json().get("checkout_url")
-    except Exception:
-        logger.error("auth_bridge: get_checkout_url failed")
+    except httpx.HTTPStatusError as exc:
+        logger.error("auth_bridge: get_checkout_url HTTP %s — %s", exc.response.status_code, exc.response.text)
+        return None
+    except Exception as exc:
+        logger.error("auth_bridge: get_checkout_url failed — %s", exc)
         return None
 
 

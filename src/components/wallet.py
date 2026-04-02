@@ -146,7 +146,7 @@ def process_auth_flow() -> None:
                 )
 
             with tab_email:
-                render_email_auth_form()
+                render_email_auth_form(key_suffix="_sidebar")
 
         # Handle MetaMask connect result
         if isinstance(result, dict) and result.get("action") == "connected":

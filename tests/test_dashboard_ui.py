@@ -7,12 +7,24 @@ AppTest notes:
   - at.tabs is empty when results=[] because the app returns early (st.info + return)
   - at.exception is an ElementList; use `len(at.exception) == 0` to check no errors
 """
+import os
 import pytest
 from unittest.mock import patch
 from streamlit.testing.v1 import AppTest
 
+os.environ.setdefault("JWT_SECRET_KEY", "a" * 32)
+
 APP_PATH = "src/dashboard.py"
 _EMPTY: list = []
+
+_TEST_ADDRESS = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+
+
+def _make_auth_token() -> str:
+    """Generate a valid JWT for the test address so the auth gate passes."""
+    from src.api.security.jwt_handler import create_access_token
+    token, _ = create_access_token(_TEST_ADDRESS, plan="free")
+    return token
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -20,6 +32,11 @@ _EMPTY: list = []
 def _make_app(extra_session: dict = None) -> AppTest:
     """Create an AppTest instance with pre-seeded session state to skip analysis."""
     at = AppTest.from_file(APP_PATH, default_timeout=15)
+    # Pre-seed auth so the auth gate passes
+    at.session_state["_auth_token"]   = _make_auth_token()
+    at.session_state["_auth_address"] = _TEST_ADDRESS
+    at.session_state["_auth_plan"]    = "free"
+    at.session_state["_wallet_restore_checked"] = True
     # Pre-seed state so the app doesn't trigger run_analysis on first load
     at.session_state["results"] = []
     at.session_state["skipped"] = []

@@ -14,7 +14,7 @@ import streamlit as st
 import src.components.auth_bridge as auth_bridge
 
 
-def render_email_auth_form(t=None) -> None:
+def render_email_auth_form(t=None, key_suffix: str = "") -> None:
     """
     Render email/password sign-in and registration form.
 
@@ -37,16 +37,16 @@ def render_email_auth_form(t=None) -> None:
 
     # ── Sign In tab ────────────────────────────────────────────────────────
     with tab_signin:
-        with st.form("email_signin_form", clear_on_submit=False):
+        with st.form(f"email_signin_form{key_suffix}", clear_on_submit=False):
             email = st.text_input(
                 _t("email_label", "Email"),
                 placeholder="you@example.com",
-                key="signin_email",
+                key=f"signin_email{key_suffix}",
             )
             password = st.text_input(
                 _t("password_label", "Password"),
                 type="password",
-                key="signin_password",
+                key=f"signin_password{key_suffix}",
             )
             submitted = st.form_submit_button(
                 _t("signin_btn", "Sign In"),
@@ -68,27 +68,27 @@ def render_email_auth_form(t=None) -> None:
 
     # ── Create Account tab ─────────────────────────────────────────────────
     with tab_register:
-        with st.form("email_register_form", clear_on_submit=True):
+        with st.form(f"email_register_form{key_suffix}", clear_on_submit=True):
             reg_name = st.text_input(
                 _t("display_name_label", "Display Name (optional)"),
                 placeholder=_t("display_name_placeholder", "Your name"),
-                key="reg_name",
+                key=f"reg_name{key_suffix}",
             )
             reg_email = st.text_input(
                 _t("email_label", "Email"),
                 placeholder="you@example.com",
-                key="reg_email",
+                key=f"reg_email{key_suffix}",
             )
             reg_pass = st.text_input(
                 _t("password_label", "Password"),
                 type="password",
                 help=_t("password_hint", "At least 8 characters"),
-                key="reg_pass",
+                key=f"reg_pass{key_suffix}",
             )
             reg_pass2 = st.text_input(
                 _t("confirm_password_label", "Confirm Password"),
                 type="password",
-                key="reg_pass2",
+                key=f"reg_pass2{key_suffix}",
             )
             reg_submitted = st.form_submit_button(
                 _t("register_btn", "Create Account"),

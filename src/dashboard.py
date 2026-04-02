@@ -1549,6 +1549,102 @@ def render_history_tab(t: "callable", th: dict, wallet_address: str) -> None:
         st.dataframe(pd.DataFrame(table_rows), width="stretch", hide_index=True)
 
 
+def _render_login_page() -> None:
+    """
+    Full-page login screen shown to unauthenticated users.
+    Replaces the sidebar auth tabs with a clean, centered layout.
+    """
+    th = get_theme()
+    inject_css(th)
+
+    # Brand header
+    st.markdown(
+        """
+        <div style="text-align:center; padding: 3rem 0 1rem;">
+            <div style="font-size:3rem;">🌡</div>
+            <div style="font-size:2rem; font-weight:800; letter-spacing:-1px; margin-top:0.3rem;">polyMad</div>
+            <div style="font-size:1rem; color:#888; margin-top:0.4rem;">
+                Prediction market edge finder
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Center the form with columns
+    _, col, _ = st.columns([1, 2, 1])
+    with col:
+        from src.components.email_auth import render_email_auth_form
+        from src.components.wallet import _wallet_component
+        import json
+        from datetime import datetime, timezone
+        from src.api.security.eip712 import build_eip712_message
+        from src.components import auth_bridge as _ab
+
+        tab_email, tab_metamask = st.tabs(["✉️ Email / Password", "🦊 MetaMask"])
+
+        with tab_email:
+            render_email_auth_form()
+
+        with tab_metamask:
+            phase = st.session_state.get("_wallet_phase")
+            if phase is None or phase == "connecting":
+                result = _wallet_component(
+                    phase=1,
+                    connect_label="Connect MetaMask",
+                    status_text="",
+                    key="wallet_login_p1",
+                )
+                if isinstance(result, dict) and result.get("action") == "connected":
+                    import re
+                    addr = (result.get("addr") or "").lower()
+                    if re.match(r"^0x[0-9a-fA-F]{40}$", addr):
+                        nonce = _ab.request_nonce(addr)
+                        if nonce:
+                            issued_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                            typed_data = build_eip712_message(addr, nonce, issued_at)
+                            st.session_state["_wallet_pending_addr"]     = addr
+                            st.session_state["_wallet_pending_nonce"]    = nonce
+                            st.session_state["_wallet_issued_at"]        = issued_at
+                            st.session_state["_wallet_typed_data_json"]  = json.dumps(typed_data)
+                            st.session_state["_wallet_phase"]            = "signing"
+                            st.rerun()
+                        else:
+                            st.error("Could not reach auth server. Please try again.")
+
+            elif phase == "signing":
+                from src.components.wallet import _reset_phase
+                addr            = st.session_state.get("_wallet_pending_addr", "")
+                typed_data_json = st.session_state.get("_wallet_typed_data_json", "")
+                nonce           = st.session_state.get("_wallet_pending_nonce", "")
+                issued_at       = st.session_state.get("_wallet_issued_at", "")
+                result = _wallet_component(
+                    phase=2,
+                    address=addr,
+                    typed_data_json=typed_data_json,
+                    key="wallet_login_p2",
+                )
+                if isinstance(result, dict) and result.get("action") == "signed":
+                    sig = result.get("sig", "")
+                    _reset_phase()
+                    ok = _ab.verify_signature(address=addr, signature=sig, nonce=nonce, issued_at=issued_at)
+                    if ok:
+                        st.session_state["_wallet_phase"] = "saving"
+                        st.rerun()
+                    else:
+                        st.error("Authentication failed. Please try again.")
+
+    # Features teaser below the form
+    st.markdown("<br>", unsafe_allow_html=True)
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown("**📊 Edge Analysis**\n\nFind value bets across weather, sports & politics markets")
+    with c2:
+        st.markdown("**🔔 Alerts**\n\nGet notified when high-edge opportunities appear")
+    with c3:
+        st.markdown("**📈 Backtest**\n\nTrack your model's calibration and P&L over time")
+
+
 def _detect_browser_lang() -> str:
     """Infer language from the browser's Accept-Language header."""
     try:
@@ -1573,6 +1669,11 @@ def main():
 
     # Drive EIP-712 / email auth state machine — must run before any gated UI.
     process_auth_flow()
+
+    # ── Auth gate: show login screen if not authenticated ─────────────────────
+    if not _auth_bridge.is_authenticated():
+        _render_login_page()
+        return
 
     # Header (logo + user info + plan badge)
     render_app_header()
