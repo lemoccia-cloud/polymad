@@ -110,13 +110,16 @@ def process_auth_flow() -> None:
     if auth_bridge.is_authenticated():
         return
 
-    # ── Phase 0: Restore check (once per session) ─────────────────────────────
+    # ── Phase 0: Restore check ────────────────────────────────────────────────
+    # Always render the component so we capture its return value on every run.
+    # The JS guard (_phase0Done) prevents duplicate sessionStorage reads within
+    # the same iframe lifetime. Python reads the component value every render
+    # and processes the "restore" action only until _RESTORE_DONE is set.
+    result = _wallet_component(phase=0, key="wallet_restore")
     if not st.session_state.get(_RESTORE_DONE):
-        st.session_state[_RESTORE_DONE] = True
-        result = _wallet_component(phase=0, key="wallet_restore")
         if isinstance(result, dict) and result.get("action") == "restore":
+            st.session_state[_RESTORE_DONE] = True
             jwt = result.get("jwt", "")
-            addr = result.get("addr", "")
             expires_at = result.get("expires_at", "")
             from src.api.security.jwt_handler import decode_access_token_full
             decoded = decode_access_token_full(jwt) if jwt else None
@@ -127,9 +130,11 @@ def process_auth_flow() -> None:
                 st.session_state[auth_bridge._ADDRESS_KEY]   = verified_addr
                 st.session_state[auth_bridge._PLAN_KEY]      = plan
                 st.rerun()
-        # Whether restore succeeded or not, fall through to connect flow
-        if auth_bridge.is_authenticated():
-            return
+        elif isinstance(result, dict) and result.get("action") == "none":
+            # sessionStorage had nothing — restore check is complete
+            st.session_state[_RESTORE_DONE] = True
+    if auth_bridge.is_authenticated():
+        return
 
     # ── Phase 1: Connect — UI handled by login page (_render_login_page) ────────
     # process_auth_flow no longer renders any Phase 1 widgets; the login page
