@@ -1557,12 +1557,15 @@ def _render_login_page() -> None:
     th = get_theme()
     inject_css(th)
 
-    # Hide sidebar completely on the login page
+    # Hide sidebar and its toggle button on the login page
     st.markdown(
         """
         <style>
-        section[data-testid="stSidebar"]   { display: none !important; }
-        [data-testid="collapsedControl"]   { display: none !important; }
+        section[data-testid="stSidebar"],
+        [data-testid="collapsedControl"],
+        button[kind="header"],
+        .st-emotion-cache-czk5ss,
+        #MainMenu { display: none !important; }
         </style>
         """,
         unsafe_allow_html=True,
