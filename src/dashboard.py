@@ -1557,15 +1557,25 @@ def _render_login_page() -> None:
     th = get_theme()
     inject_css(th)
 
-    # Hide sidebar and its toggle button on the login page
+    # Hide sidebar and every possible toggle/arrow button on the login page
     st.markdown(
         """
         <style>
         section[data-testid="stSidebar"],
+        [data-testid="stSidebarCollapsedControl"],
         [data-testid="collapsedControl"],
-        button[kind="header"],
-        .st-emotion-cache-czk5ss,
-        #MainMenu { display: none !important; }
+        [data-testid="stSidebarCollapseButton"],
+        [data-testid="stSidebarContent"],
+        #MainMenu,
+        header { display: none !important; }
+        /* Streamlit wraps the >> in a fixed div top-left — hide it too */
+        div[class*="collapsedControl"],
+        div[class*="CollapseControl"],
+        div[class*="sidebar-collapse"],
+        button[aria-label*="sidebar"],
+        button[aria-label*="Sidebar"],
+        button[title*="sidebar"],
+        button[title*="Sidebar"] { display: none !important; }
         </style>
         """,
         unsafe_allow_html=True,
