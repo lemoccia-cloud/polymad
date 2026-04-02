@@ -18,6 +18,8 @@ from pydantic import BaseModel
 from src.api.deps import get_current_address_and_plan
 from src.data.supabase_client import get_stripe_customer_id, upsert_user_plan
 
+
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/billing", tags=["billing"])
@@ -58,6 +60,16 @@ class CheckoutResponse(BaseModel):
 
 class PortalResponse(BaseModel):
     portal_url: str
+
+
+class InvoiceItem(BaseModel):
+    id: str
+    date: str
+    amount: float        # in USD
+    currency: str
+    status: str          # "paid" | "open" | "void"
+    pdf_url: str
+    hosted_url: str
 
 
 @router.post(
@@ -159,3 +171,45 @@ def get_customer_portal(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Payment provider error — please try again",
         ) from exc
+
+
+@router.get(
+    "/invoices",
+    response_model=list[InvoiceItem],
+    summary="List Stripe invoices for the authenticated user",
+)
+def list_invoices(
+    auth: Tuple[str, str] = Depends(get_current_address_and_plan),
+) -> list[InvoiceItem]:
+    """
+    Return up to 12 recent Stripe invoices for the authenticated user.
+    Returns an empty list if the user has no billing account.
+    """
+    address, _ = auth
+
+    stripe.api_key = _stripe_key()
+    sb_url, sb_key = _supabase_creds()
+
+    customer_id = get_stripe_customer_id(sb_url, sb_key, address) if (sb_url and sb_key) else None
+    if not customer_id:
+        return []
+
+    try:
+        invoices = stripe.Invoice.list(customer=customer_id, limit=12)
+        items = []
+        for inv in invoices.auto_paging_iter():
+            items.append(InvoiceItem(
+                id=inv.id,
+                date=str(inv.created),
+                amount=round((inv.amount_paid or inv.amount_due or 0) / 100, 2),
+                currency=(inv.currency or "usd").upper(),
+                status=inv.status or "unknown",
+                pdf_url=inv.invoice_pdf or "",
+                hosted_url=inv.hosted_invoice_url or "",
+            ))
+            if len(items) >= 12:
+                break
+        return items
+    except stripe.StripeError as exc:
+        logger.error("billing.invoices Stripe error: %s", exc)
+        return []

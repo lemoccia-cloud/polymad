@@ -215,7 +215,7 @@ def render_filter_bar(th: dict, results: list, bankroll: float) -> tuple:
             data=csv_str.encode("utf-8"),
             file_name=f"polymad_{datetime.now(tz=timezone.utc).strftime('%Y%m%d_%H%M')}.csv",
             mime="text/csv",
-            use_container_width=True,
+            width="stretch",
             key="csv_download_btn",
         )
 

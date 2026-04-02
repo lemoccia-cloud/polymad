@@ -12,13 +12,17 @@ browser-accessible storage.
 Public API:
     request_nonce(address)          → nonce string or None on error
     verify_signature(address, sig, nonce, issued_at) → bool
+    login_email(email, password)    → bool
+    register_email(email, password, display_name) → dict {ok, message}
     get_portfolio()                 → dict or None
     get_positions(include_closed)   → list or None
+    get_invoices()                  → list or None
     get_checkout_url(plan, success_url, cancel_url) → str or None
     get_portal_url(return_url)      → str or None
     is_authenticated()              → bool
     get_authenticated_address()     → str or None
     get_authenticated_plan()        → str ("free" | "pro" | "trader")
+    get_authenticated_display_name() → str or None
     clear_auth()                    → None
 """
 import logging
@@ -41,6 +45,7 @@ _TOKEN_KEY = "_auth_token"
 _TOKEN_EXP_KEY = "_auth_token_expires_at"
 _ADDRESS_KEY = "_auth_address"
 _PLAN_KEY = "_auth_plan"
+_DISPLAY_NAME_KEY = "_auth_display_name"
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +205,17 @@ def get_authenticated_plan() -> str:
     return st.session_state.get(_PLAN_KEY, "free")
 
 
+def get_authenticated_display_name() -> Optional[str]:
+    """
+    Return the display name for the authenticated user, or None.
+    For MetaMask users this is None unless they set one.
+    For email users this is the display_name set at registration.
+    """
+    if not is_authenticated():
+        return None
+    return st.session_state.get(_DISPLAY_NAME_KEY)
+
+
 def clear_auth() -> None:
     """
     Remove all authentication state from session_state.
@@ -207,8 +223,55 @@ def clear_auth() -> None:
     (phase 4 — clear_storage) since only same-origin iframes can access
     window.parent.sessionStorage reliably.
     """
-    for key in (_TOKEN_KEY, _TOKEN_EXP_KEY, _ADDRESS_KEY, _PLAN_KEY):
+    for key in (_TOKEN_KEY, _TOKEN_EXP_KEY, _ADDRESS_KEY, _PLAN_KEY, _DISPLAY_NAME_KEY):
         st.session_state.pop(key, None)
+
+
+def login_email(email: str, password: str) -> bool:
+    """
+    Authenticate with email and password via FastAPI /auth/email/login.
+
+    On success: stores JWT in st.session_state and returns True.
+    On failure: returns False.
+    """
+    data = _post("/auth/email/login", {"email": email, "password": password})
+    if data and "access_token" in data:
+        token = data["access_token"]
+        expires_at = data.get("expires_at", "")
+        plan = data.get("plan", "free")
+        # For email users sub is 'email:<uuid>' — store as address for consistency
+        addr = data.get("address", f"email:{email}")
+        st.session_state[_TOKEN_KEY] = token
+        st.session_state[_TOKEN_EXP_KEY] = expires_at
+        st.session_state[_ADDRESS_KEY] = addr
+        st.session_state[_PLAN_KEY] = plan
+        # Store email as display identifier
+        st.session_state[_DISPLAY_NAME_KEY] = email
+        logger.info("auth_bridge: email login successful plan=%s", plan)
+        return True
+    return False
+
+
+def register_email(email: str, password: str, display_name: str = "") -> dict:
+    """
+    Register a new account via FastAPI /auth/email/register.
+
+    Returns {"ok": True, "message": "..."} on success
+    or     {"ok": False, "message": "..."} on failure.
+    """
+    try:
+        resp = httpx.post(
+            f"{_FASTAPI_BASE}/auth/email/register",
+            json={"email": email, "password": password, "display_name": display_name},
+            timeout=_TIMEOUT,
+        )
+        if resp.status_code == 201:
+            return {"ok": True, "message": resp.json().get("message", "Account created.")}
+        detail = resp.json().get("detail", "Registration failed.")
+        return {"ok": False, "message": detail}
+    except Exception:
+        logger.error("auth_bridge: register_email failed")
+        return {"ok": False, "message": "Could not reach authentication service."}
 
 
 def get_checkout_url(plan: str, success_url: str, cancel_url: str) -> Optional[str]:
@@ -251,6 +314,19 @@ def get_portal_url(return_url: str) -> Optional[str]:
     except Exception:
         logger.error("auth_bridge: get_portal_url failed")
         return None
+
+
+def get_invoices() -> Optional[list]:
+    """
+    Fetch Stripe invoice list for the authenticated user.
+    Returns a list of invoice dicts or None if unauthenticated or on error.
+    """
+    if not is_authenticated():
+        return None
+    data = _get("/api/billing/invoices")
+    if isinstance(data, list):
+        return data
+    return None
 
 
 def get_portfolio() -> Optional[dict]:

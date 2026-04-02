@@ -28,6 +28,7 @@ from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.api.routers import auth as auth_router
+from src.api.routers import auth_email as auth_email_router
 from src.api.routers import portfolio as portfolio_router
 from src.api.routers import billing as billing_router
 from src.api.routers import stripe_webhooks as stripe_webhooks_router
@@ -161,6 +162,7 @@ def create_app() -> FastAPI:
 
     # -- Routers --------------------------------------------------------------
     app.include_router(auth_router.router)
+    app.include_router(auth_email_router.router)
     app.include_router(portfolio_router.router)
     app.include_router(billing_router.router)
     app.include_router(stripe_webhooks_router.router)

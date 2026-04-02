@@ -52,6 +52,16 @@ Supabase DDL (run once in the Supabase SQL editor):
     CREATE INDEX IF NOT EXISTS idx_users_plan ON users (plan);
     CREATE INDEX IF NOT EXISTS idx_users_stripe_customer ON users (stripe_customer_id);
 
+    -- Fase 5: Email/password auth (additive — wallet users unaffected)
+    -- Run in Supabase SQL editor to add columns to existing table:
+    --   ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT UNIQUE;
+    --   ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider TEXT DEFAULT 'wallet';
+    --   ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
+    --   ALTER TABLE users ADD COLUMN IF NOT EXISTS supabase_user_id TEXT UNIQUE;
+    --   CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
+    --   CREATE INDEX IF NOT EXISTS idx_users_supabase_id ON users (supabase_user_id);
+    -- For email users wallet_address = 'email:<supabase_user_id>' (never starts with 0x)
+
     -- Fase 3: Telegram bot subscribers
     CREATE TABLE IF NOT EXISTS telegram_users (
         id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -529,6 +539,137 @@ def get_stripe_customer_id(
         return None
     except requests.RequestException:
         return None
+
+
+# ─── Fase 5 — Email/password auth via Supabase Auth REST ─────────────────────
+
+def supabase_auth_signup(
+    supabase_url: str,
+    anon_key: str,
+    email: str,
+    password: str,
+) -> Optional[dict]:
+    """
+    Register a new user with email/password via Supabase Auth.
+
+    Returns dict with 'user_id' and 'email' on success, or None on error.
+    Supabase will send a verification email — the user must confirm before login.
+    """
+    url = f"{supabase_url.rstrip('/')}/auth/v1/signup"
+    try:
+        resp = requests.post(
+            url,
+            headers={"apikey": anon_key, "Content-Type": "application/json"},
+            data=json.dumps({"email": email, "password": password}),
+            timeout=_TIMEOUT,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            user = data.get("user") or data  # shape varies by Supabase version
+            user_id = user.get("id") if isinstance(user, dict) else None
+            if user_id:
+                return {"user_id": user_id, "email": email}
+        logger.warning("supabase_auth_signup HTTP %d — %s", resp.status_code, resp.text[:200])
+        return None
+    except requests.RequestException as exc:
+        logger.warning("supabase_auth_signup error: %s", exc)
+        return None
+
+
+def supabase_auth_login(
+    supabase_url: str,
+    anon_key: str,
+    email: str,
+    password: str,
+) -> Optional[dict]:
+    """
+    Authenticate an existing user with email/password via Supabase Auth.
+
+    Returns dict with 'user_id' and 'email' on success, or None on failure
+    (wrong password, unverified email, user not found).
+    """
+    url = f"{supabase_url.rstrip('/')}/auth/v1/token?grant_type=password"
+    try:
+        resp = requests.post(
+            url,
+            headers={"apikey": anon_key, "Content-Type": "application/json"},
+            data=json.dumps({"email": email, "password": password}),
+            timeout=_TIMEOUT,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            user = data.get("user", {})
+            user_id = user.get("id")
+            if user_id:
+                return {"user_id": user_id, "email": user.get("email", email)}
+        logger.warning("supabase_auth_login HTTP %d", resp.status_code)
+        return None
+    except requests.RequestException as exc:
+        logger.warning("supabase_auth_login error: %s", exc)
+        return None
+
+
+def get_user_by_supabase_id(
+    supabase_url: str,
+    anon_key: str,
+    supabase_user_id: str,
+) -> Optional[dict]:
+    """
+    Fetch a users row by supabase_user_id.
+    Returns the row dict or None if not found.
+    """
+    url = f"{supabase_url.rstrip('/')}/rest/v1/users"
+    params = {
+        "select": "wallet_address,plan,email,display_name,auth_provider",
+        "supabase_user_id": f"eq.{supabase_user_id}",
+        "limit": "1",
+    }
+    try:
+        resp = requests.get(url, headers=_headers(anon_key), params=params, timeout=_TIMEOUT)
+        if resp.status_code == 200:
+            rows = resp.json()
+            return rows[0] if rows else None
+        return None
+    except requests.RequestException:
+        return None
+
+
+def upsert_email_user(
+    supabase_url: str,
+    anon_key: str,
+    supabase_user_id: str,
+    email: str,
+    display_name: str = "",
+    plan: str = "free",
+) -> bool:
+    """
+    Insert or update a user row for an email-authenticated user.
+    Uses wallet_address = 'email:<supabase_user_id>' as primary key.
+    Returns True on success.
+    """
+    wallet_address = f"email:{supabase_user_id}"
+    url = f"{supabase_url.rstrip('/')}/rest/v1/users"
+    payload: dict = {
+        "wallet_address": wallet_address,
+        "email": email,
+        "auth_provider": "email",
+        "supabase_user_id": supabase_user_id,
+        "plan": plan,
+        "plan_updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if display_name:
+        payload["display_name"] = display_name
+    try:
+        resp = requests.post(
+            url,
+            headers={**_headers(anon_key), "Prefer": "resolution=merge-duplicates,return=minimal"},
+            data=json.dumps(payload),
+            timeout=_TIMEOUT,
+        )
+        return resp.status_code in (200, 201)
+    except requests.RequestException as exc:
+        logger.warning("upsert_email_user error: %s", exc)
+        return False
 
 
 def get_alert_history(

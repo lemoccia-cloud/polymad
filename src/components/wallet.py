@@ -47,6 +47,7 @@ from src.data.supabase_client import (
     get_alert_history,
 )
 from src.components import auth_bridge
+from src.components.email_auth import render_email_auth_form
 from src.api.security.eip712 import build_eip712_message
 
 logger = logging.getLogger(__name__)
@@ -134,12 +135,20 @@ def process_auth_flow() -> None:
     # ── Phase 1: Connect (rendered in sidebar — one canonical location) ───────
     if phase is None or phase == "connecting":
         with st.sidebar:
-            result = _wallet_component(
-                phase=1,
-                connect_label="Connect MetaMask",
-                status_text="",
-                key="wallet_p1",
-            )
+            tab_metamask, tab_email = st.tabs(["🦊 MetaMask", "✉️ Email"])
+
+            with tab_metamask:
+                result = _wallet_component(
+                    phase=1,
+                    connect_label="Connect MetaMask",
+                    status_text="",
+                    key="wallet_p1",
+                )
+
+            with tab_email:
+                render_email_auth_form()
+
+        # Handle MetaMask connect result
         if isinstance(result, dict) and result.get("action") == "connected":
             import re
             addr = (result.get("addr") or "").lower()
@@ -156,6 +165,13 @@ def process_auth_flow() -> None:
             st.session_state[_IAT_KEY]        = issued_at
             st.session_state[_TYPED_DATA_KEY] = json.dumps(typed_data)
             st.session_state[_PHASE_KEY]      = "signing"
+            st.rerun()
+
+        # Handle email login — auth_bridge.login_email sets session_state on success
+        # After rerun (triggered inside render_email_auth_form), is_authenticated() = True
+        # and phase "saving" will persist the JWT to sessionStorage
+        if auth_bridge.is_authenticated() and phase != "saving":
+            st.session_state[_PHASE_KEY] = "saving"
             st.rerun()
         return
 
@@ -234,7 +250,7 @@ def render_auth_status() -> None:
         """,
         unsafe_allow_html=True,
     )
-    if st.sidebar.button("Sign out", use_container_width=True):
+    if st.sidebar.button("Sign out", width="stretch"):
         auth_bridge.clear_auth()
         _reset_phase()
         # Clear sessionStorage via same-origin component (phase 4)
@@ -401,7 +417,7 @@ def render_wallet_tab(
                 t("pnl_label"):       f"{'+'if pnl>=0 else '-'}${abs(pnl):.2f}",
                 t("pnl_return_pct"):  f"{'+'if pnl_pct>=0 else ''}{pnl_pct:.1f}%",
             })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
     else:
         st.info(t("no_positions_found"))
 
@@ -504,7 +520,7 @@ def render_wallet_tab(
                     t("backtest_col_edge"):   f"{float(h.get('edge', 0))*100:+.1f}%",
                     t("backtest_col_result"): result_str,
                 })
-            st.dataframe(pd.DataFrame(hist_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(hist_rows), width="stretch", hide_index=True)
         else:
             st.info(t("alert_history_empty"))
     else:
@@ -543,6 +559,6 @@ def render_wallet_tab(
                 }
                 for mtype, v in sorted(by_type.items())
             ]
-            st.dataframe(pd.DataFrame(type_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(type_rows), width="stretch", hide_index=True)
     else:
         st.info(t("alert_history_empty"))

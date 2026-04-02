@@ -32,6 +32,8 @@ from src.models.market import WeatherForecast, OpportunityResult
 from src.components.wallet import render_wallet_sidebar, render_wallet_tab, process_auth_flow
 from src.components.filters import render_filter_bar
 from src.components.auth_bridge import get_authenticated_plan, get_checkout_url
+from src.components.app_header import render_app_header
+from src.components import auth_bridge as _auth_bridge
 
 
 def _app_base_url() -> str:
@@ -887,7 +889,7 @@ def render_alert_card(result: OpportunityResult, bankroll: float, th: dict) -> N
         with st.expander(f"📊 {t('ensemble_dist')} — {getattr(m, 'city', '')} {format_date(m.resolution_date, lang)}"):
             st.plotly_chart(
                 make_ensemble_distribution(result, th),
-                use_container_width=True, config={"displayModeBar": False},
+                width="stretch", config={"displayModeBar": False},
                 key=f"dist_{m.condition_id}",
             )
 
@@ -949,7 +951,7 @@ def render_full_table(results: list, bankroll: float, th: dict) -> None:
         return f"color: {th['negative']}"
 
     styled = df.style.map(color_edge, subset=[edge_col])
-    st.dataframe(styled, use_container_width=True, hide_index=True, height=420)
+    st.dataframe(styled, width="stretch", hide_index=True, height=420)
 
 
 # ─── Auto-refresh ─────────────────────────────────────────────────────────────
@@ -1134,14 +1136,14 @@ def render_sidebar(th: dict):
             st.session_state["lang"] = LANGUAGE_OPTIONS[lang_label]
         with col_theme:
             is_dark = st.session_state.get("theme", "light") == "dark"
-            if st.button("🌙" if not is_dark else "☀️", use_container_width=True,
+            if st.button("🌙" if not is_dark else "☀️", width="stretch",
                          help="Alternar tema / Toggle theme"):
                 st.session_state["theme"] = "light" if is_dark else "dark"
                 st.rerun()
 
         # ── Run button (top, prominent) ──────────────────────────────────────
         st.markdown("<div style='margin-top:10px'>", unsafe_allow_html=True)
-        run_btn = st.button(t("run_analysis"), type="primary", use_container_width=True)
+        run_btn = st.button(t("run_analysis"), type="primary", width="stretch")
         if "last_run" in st.session_state:
             st.markdown(
                 f"<div style='text-align:center; color:{th['sb_text_muted']}; font-size:11px; margin-top:4px;'>"
@@ -1199,47 +1201,21 @@ def render_sidebar(th: dict):
             ))
             inject_autorefresh_js(refresh_interval, th)
 
-        # ── Notifications ────────────────────────────────────────────────────
-        _sb_section(t("sidebar_notifications"), th)
-        notify_enabled = st.toggle(t("notify_enable"), value=False, help=t("help_notify"))
-        notify_email = ""
-        if notify_enabled:
-            notify_email = st.text_input(
-                t("notify_email"),
-                placeholder="seu@email.com",
-                label_visibility="collapsed",
-            )
+        # ── Auth / Wallet (MetaMask + Email tabs handled by process_auth_flow) ──
+        _sb_section(f"🔐 {t('wallet')}", th)
+        render_wallet_sidebar(t)
 
-        # ── Wallet ───────────────────────────────────────────────────────────
-        _sb_section(f"🦊 {t('wallet')}", th)
-        wallet_address = render_wallet_sidebar(t)
-
-        # ── Upgrade CTA ──────────────────────────────────────────────────────
+        # ── Quick links to Account / Billing pages ────────────────────────────
         _current_plan = get_authenticated_plan()
-        if _current_plan == "free":
-            _sb_section("⚡ Upgrade", th)
-            if st.button("Pro — $19/mês", use_container_width=True, type="secondary"):
-                _url = get_checkout_url(
-                    "pro",
-                    success_url=f"{_app_base_url()}/?plan_success=1",
-                    cancel_url=f"{_app_base_url()}/",
-                )
-                if _url:
-                    st.markdown(f'<meta http-equiv="refresh" content="0; url={_url}">', unsafe_allow_html=True)
-                else:
-                    st.info("Conecte sua carteira primeiro para fazer upgrade.")
-        elif _current_plan == "pro":
-            _sb_section("⚡ Upgrade", th)
-            if st.button("Trader — $49/mês", use_container_width=True, type="secondary"):
-                _url = get_checkout_url(
-                    "trader",
-                    success_url=f"{_app_base_url()}/?plan_success=1",
-                    cancel_url=f"{_app_base_url()}/",
-                )
-                if _url:
-                    st.markdown(f'<meta http-equiv="refresh" content="0; url={_url}">', unsafe_allow_html=True)
-                else:
-                    st.info("Conecte sua carteira primeiro para fazer upgrade.")
+        if _auth_bridge.is_authenticated() and _current_plan in ("free", "pro"):
+            upgrade_label = "⚡ Upgrade to Pro" if _current_plan == "free" else "⚡ Upgrade to Trader"
+            st.caption(f"[{upgrade_label}](billing)", help="Go to Billing page to upgrade your plan")
+
+    # wallet_address from auth state (not from sidebar widget return)
+    wallet_address = _auth_bridge.get_authenticated_address() or "anonymous"
+    # notify_enabled/notify_email still returned for backward compat with run_analysis email dispatch
+    notify_enabled = False
+    notify_email = ""
 
     return bankroll, edge_threshold, model, max_markets, cities_filter, run_btn, wallet_address, notify_enabled, notify_email
 
@@ -1446,14 +1422,14 @@ def render_backtesting_tab(th: dict, poly_client) -> None:
         st.markdown(f"**{t('backtest_title')}**")
         st.plotly_chart(
             make_calibration_chart(resolved, th),
-            use_container_width=True, config={"displayModeBar": False},
+            width="stretch", config={"displayModeBar": False},
             key="backtest_calibration",
         )
     with ch_type:
         st.markdown(f"**{t('backtest_by_type')}**")
         st.plotly_chart(
             make_accuracy_by_type_chart(resolved, th),
-            use_container_width=True, config={"displayModeBar": False},
+            width="stretch", config={"displayModeBar": False},
             key="backtest_by_type_chart",
         )
 
@@ -1474,7 +1450,7 @@ def render_backtesting_tab(th: dict, poly_client) -> None:
             t("backtest_col_date"):     str(row.get("resolution_date", ""))[:10],
         })
     if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -1545,7 +1521,7 @@ def render_history_tab(t: "callable", th: dict, wallet_address: str) -> None:
             yaxis=dict(gridcolor=th.get("plot_grid", "#334155")),
             height=220,
         )
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
     # ── Table ─────────────────────────────────────────────────────────────────
     table_rows = []
@@ -1570,7 +1546,7 @@ def render_history_tab(t: "callable", th: dict, wallet_address: str) -> None:
         })
 
     if table_rows:
-        st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(table_rows), width="stretch", hide_index=True)
 
 
 def _detect_browser_lang() -> str:
@@ -1595,9 +1571,11 @@ def main():
     if "theme" not in st.session_state:
         st.session_state["theme"] = "light"
 
-    # Drive EIP-712 auth state machine (nonce request + signature verification)
-    # Must run before any wallet-gated UI is rendered.
+    # Drive EIP-712 / email auth state machine — must run before any gated UI.
     process_auth_flow()
+
+    # Header (logo + user info + plan badge)
+    render_app_header()
 
     # ── Post-payment plan refresh ─────────────────────────────────────────────
     # After Stripe redirects back with ?plan_success=1, the restored JWT still
@@ -1759,7 +1737,7 @@ def main():
                         unsafe_allow_html=True)
             st.plotly_chart(
                 make_edge_scatter(results, threshold_used, th),
-                use_container_width=True, config={"displayModeBar": False},
+                width="stretch", config={"displayModeBar": False},
             )
 
     # ── Tab: Today ────────────────────────────────────────────────────────────
@@ -1821,5 +1799,39 @@ def main():
         render_backtesting_tab(th, poly_client=st.session_state.get("_poly_client"))
 
 
+def _run_account_page():
+    from src.pages.account import render_account_page
+    render_account_page(t=t)
+
+
+def _run_billing_page():
+    from src.pages.billing import render_billing_page
+    render_billing_page(t=t, app_base_url=_app_base_url())
+
+
+def _run_notifications_page():
+    from src.pages.notifications import render_notifications_page
+    try:
+        supa_url = st.secrets.get("SUPABASE_URL", "")
+        supa_key = st.secrets.get("SUPABASE_ANON_KEY", "")
+    except Exception:
+        supa_url, supa_key = "", ""
+    render_notifications_page(t=t, supa_url=supa_url, supa_key=supa_key)
+
+
 if __name__ == "__main__":
-    main()
+    pg = st.navigation(
+        {
+            "": [
+                st.Page(main, title="Dashboard", icon="📊", default=True),
+            ],
+            "Account": [
+                st.Page(_run_account_page,       title="My Account",    icon="👤"),
+                st.Page(_run_billing_page,       title="Billing",       icon="💳"),
+                st.Page(_run_notifications_page, title="Notifications", icon="🔔"),
+            ],
+        },
+        position="sidebar",
+        expanded=True,
+    )
+    pg.run()
