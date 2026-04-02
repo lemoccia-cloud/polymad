@@ -1557,6 +1557,17 @@ def _render_login_page() -> None:
     th = get_theme()
     inject_css(th)
 
+    # Hide sidebar completely on the login page
+    st.markdown(
+        """
+        <style>
+        section[data-testid="stSidebar"]   { display: none !important; }
+        [data-testid="collapsedControl"]   { display: none !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     # Brand header
     st.markdown(
         """
