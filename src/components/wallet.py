@@ -47,7 +47,6 @@ from src.data.supabase_client import (
     get_alert_history,
 )
 from src.components import auth_bridge
-from src.components.email_auth import render_email_auth_form
 from src.api.security.eip712 import build_eip712_message
 
 logger = logging.getLogger(__name__)
@@ -132,45 +131,12 @@ def process_auth_flow() -> None:
         if auth_bridge.is_authenticated():
             return
 
-    # ── Phase 1: Connect (rendered in sidebar — one canonical location) ───────
+    # ── Phase 1: Connect — UI handled by login page (_render_login_page) ────────
+    # process_auth_flow no longer renders any Phase 1 widgets; the login page
+    # owns that UI. We only need to transition to "saving" if email auth
+    # succeeded (auth_bridge.login_email sets session_state before rerun).
     if phase is None or phase == "connecting":
-        with st.sidebar:
-            tab_metamask, tab_email = st.tabs(["🦊 MetaMask", "✉️ Email"])
-
-            with tab_metamask:
-                result = _wallet_component(
-                    phase=1,
-                    connect_label="Connect MetaMask",
-                    status_text="",
-                    key="wallet_p1",
-                )
-
-            with tab_email:
-                render_email_auth_form(key_suffix="_sidebar")
-
-        # Handle MetaMask connect result
-        if isinstance(result, dict) and result.get("action") == "connected":
-            import re
-            addr = (result.get("addr") or "").lower()
-            if not re.match(r"^0x[0-9a-fA-F]{40}$", addr):
-                return
-            nonce = auth_bridge.request_nonce(addr)
-            if not nonce:
-                st.sidebar.error("Could not reach auth server. Please try again.")
-                return
-            issued_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            typed_data = build_eip712_message(addr, nonce, issued_at)
-            st.session_state[_ADDR_KEY]       = addr
-            st.session_state[_NONCE_KEY]      = nonce
-            st.session_state[_IAT_KEY]        = issued_at
-            st.session_state[_TYPED_DATA_KEY] = json.dumps(typed_data)
-            st.session_state[_PHASE_KEY]      = "signing"
-            st.rerun()
-
-        # Handle email login — auth_bridge.login_email sets session_state on success
-        # After rerun (triggered inside render_email_auth_form), is_authenticated() = True
-        # and phase "saving" will persist the JWT to sessionStorage
-        if auth_bridge.is_authenticated() and phase != "saving":
+        if auth_bridge.is_authenticated():
             st.session_state[_PHASE_KEY] = "saving"
             st.rerun()
         return
