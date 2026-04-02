@@ -1575,64 +1575,7 @@ def _render_login_page() -> None:
     _, col, _ = st.columns([1, 2, 1])
     with col:
         from src.components.email_auth import render_email_auth_form
-        from src.components.wallet import _wallet_component
-        import json
-        from datetime import datetime, timezone
-        from src.api.security.eip712 import build_eip712_message
-        from src.components import auth_bridge as _ab
-
-        tab_email, tab_metamask = st.tabs(["✉️ Email / Password", "🦊 MetaMask"])
-
-        with tab_email:
-            render_email_auth_form()
-
-        with tab_metamask:
-            phase = st.session_state.get("_wallet_phase")
-            if phase is None or phase == "connecting":
-                result = _wallet_component(
-                    phase=1,
-                    connect_label="Connect MetaMask",
-                    status_text="",
-                    key="wallet_login_p1",
-                )
-                if isinstance(result, dict) and result.get("action") == "connected":
-                    import re
-                    addr = (result.get("addr") or "").lower()
-                    if re.match(r"^0x[0-9a-fA-F]{40}$", addr):
-                        nonce = _ab.request_nonce(addr)
-                        if nonce:
-                            issued_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                            typed_data = build_eip712_message(addr, nonce, issued_at)
-                            st.session_state["_wallet_pending_addr"]     = addr
-                            st.session_state["_wallet_pending_nonce"]    = nonce
-                            st.session_state["_wallet_issued_at"]        = issued_at
-                            st.session_state["_wallet_typed_data_json"]  = json.dumps(typed_data)
-                            st.session_state["_wallet_phase"]            = "signing"
-                            st.rerun()
-                        else:
-                            st.error("Could not reach auth server. Please try again.")
-
-            elif phase == "signing":
-                from src.components.wallet import _reset_phase
-                addr            = st.session_state.get("_wallet_pending_addr", "")
-                typed_data_json = st.session_state.get("_wallet_typed_data_json", "")
-                nonce           = st.session_state.get("_wallet_pending_nonce", "")
-                issued_at       = st.session_state.get("_wallet_issued_at", "")
-                result = _wallet_component(
-                    phase=2,
-                    address=addr,
-                    typed_data_json=typed_data_json,
-                    key="wallet_login_p2",
-                )
-                if isinstance(result, dict) and result.get("action") == "signed":
-                    sig = result.get("sig", "")
-                    _reset_phase()
-                    ok = _ab.verify_signature(address=addr, signature=sig, nonce=nonce, issued_at=issued_at)
-                    if ok:
-                        st.session_state["_wallet_phase"] = "saving"
-                        st.rerun()
-                    else:
-                        st.error("Authentication failed. Please try again.")
+        render_email_auth_form()
 
 
 
