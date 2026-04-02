@@ -4,11 +4,16 @@ Account management page.
 Shows the authenticated user's profile, session info, and sign-out button.
 Accessible via st.navigation() from the main dashboard.
 """
+import json
+import re
+from datetime import datetime, timezone
+
 import streamlit as st
 
 import src.components.auth_bridge as auth_bridge
 from src.components.app_header import render_app_header
-from src.components.wallet import process_auth_flow, render_wallet_sidebar
+from src.components.wallet import process_auth_flow, render_wallet_sidebar, _wallet_component, _reset_phase
+from src.api.security.eip712 import build_eip712_message
 
 
 def render_account_page(t=None) -> None:
@@ -95,13 +100,63 @@ def render_account_page(t=None) -> None:
 
     # ── Linked wallet (for email users) ───────────────────────────────────
     if not addr.startswith("0x"):
-        st.subheader(_t("linked_wallet", "Linked Wallet"))
-        st.info(
+        st.subheader(_t("linked_wallet", "Connect MetaMask"))
+        st.markdown(
             _t(
                 "link_wallet_info",
-                "Link your MetaMask wallet to access portfolio tracking and Polymarket position data.",
+                "Connect your MetaMask wallet to access portfolio tracking and Polymarket position data.",
             )
         )
-        st.caption(
-            _t("link_wallet_coming", "Wallet linking coming soon — sign in with MetaMask to use this feature now.")
-        )
+
+        linked = st.session_state.get("_linked_wallet_address", "")
+        if linked:
+            st.success(f"✅ Wallet connected: `{linked[:6]}…{linked[-4:]}`")
+        else:
+            phase = st.session_state.get("_wallet_phase")
+
+            if phase is None or phase == "connecting":
+                result = _wallet_component(
+                    phase=1,
+                    connect_label="Connect MetaMask",
+                    status_text="",
+                    key="wallet_account_p1",
+                )
+                if isinstance(result, dict) and result.get("action") == "connected":
+                    wallet_addr = (result.get("addr") or "").lower()
+                    if re.match(r"^0x[0-9a-fA-F]{40}$", wallet_addr):
+                        nonce = auth_bridge.request_nonce(wallet_addr)
+                        if nonce:
+                            issued_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                            typed_data = build_eip712_message(wallet_addr, nonce, issued_at)
+                            st.session_state["_wallet_pending_addr"]    = wallet_addr
+                            st.session_state["_wallet_pending_nonce"]   = nonce
+                            st.session_state["_wallet_issued_at"]       = issued_at
+                            st.session_state["_wallet_typed_data_json"] = json.dumps(typed_data)
+                            st.session_state["_wallet_phase"]           = "signing"
+                            st.rerun()
+                        else:
+                            st.error("Could not reach auth server. Please try again.")
+
+            elif phase == "signing":
+                w_addr          = st.session_state.get("_wallet_pending_addr", "")
+                typed_data_json = st.session_state.get("_wallet_typed_data_json", "")
+                nonce           = st.session_state.get("_wallet_pending_nonce", "")
+                issued_at       = st.session_state.get("_wallet_issued_at", "")
+                result = _wallet_component(
+                    phase=2,
+                    address=w_addr,
+                    typed_data_json=typed_data_json,
+                    key="wallet_account_p2",
+                )
+                if isinstance(result, dict) and result.get("action") == "signed":
+                    sig = result.get("sig", "")
+                    _reset_phase()
+                    ok = auth_bridge.verify_signature(
+                        address=w_addr, signature=sig, nonce=nonce, issued_at=issued_at
+                    )
+                    if ok:
+                        st.session_state["_linked_wallet_address"] = w_addr
+                        st.success(f"✅ Wallet connected: `{w_addr[:6]}…{w_addr[-4:]}`")
+                        st.rerun()
+                    else:
+                        st.error("Signature verification failed. Please try again.")

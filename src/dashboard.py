@@ -1634,15 +1634,6 @@ def _render_login_page() -> None:
                     else:
                         st.error("Authentication failed. Please try again.")
 
-    # Features teaser below the form
-    st.markdown("<br>", unsafe_allow_html=True)
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.markdown("**📊 Edge Analysis**\n\nFind value bets across weather, sports & politics markets")
-    with c2:
-        st.markdown("**🔔 Alerts**\n\nGet notified when high-edge opportunities appear")
-    with c3:
-        st.markdown("**📈 Backtest**\n\nTrack your model's calibration and P&L over time")
 
 
 def _detect_browser_lang() -> str:
