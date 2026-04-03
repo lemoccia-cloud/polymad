@@ -1097,36 +1097,88 @@ def _sb_section(label: str, th: dict) -> None:
 
 def render_sidebar(th: dict):
     with st.sidebar:
-        # ── Logo ────────────────────────────────────────────────────────────
-        st.markdown(f"""
-        <div style="padding:16px 0 12px; text-align:center;
-                    border-bottom:1px solid {th['sidebar_border']}; margin-bottom:12px">
-          <div style="font-size:26px; font-weight:900; letter-spacing:-0.5px;
-                      color:{th['sb_text']};">
-            🌡 polyMad
-          </div>
-          <div style="font-size:11px; color:{th['sb_text_muted']}; margin-top:3px; font-weight:500;">
-            {t('app_subtitle')}
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # ── Plan badge ──────────────────────────────────────────────────────
+        # ── Header: brand + plan badge + theme toggle ────────────────────────
         _plan = get_authenticated_plan()
         _plan_colors = {"free": "#6b7280", "pro": "#2563eb", "trader": "#7c3aed"}
         _plan_color = _plan_colors.get(_plan, "#6b7280")
         _plan_label = settings.PLAN_LIMITS.get(_plan, {}).get("label", _plan.capitalize())
-        st.markdown(
-            f"<div style='text-align:center; margin-bottom:12px;'>"
-            f"<span style='background:{_plan_color}22; color:{_plan_color}; border:1px solid {_plan_color}55; "
-            f"border-radius:12px; padding:2px 10px; font-size:11px; font-weight:700; letter-spacing:0.05em;'>"
-            f"{_plan_label}</span></div>",
-            unsafe_allow_html=True,
-        )
+        col_brand, col_toggle = st.columns([5, 1])
+        with col_brand:
+            st.markdown(
+                f"<div style='padding:6px 0 4px;'>"
+                f"<span style='font-size:17px;font-weight:800;color:{th['sb_text']};'>🌡 polyMad</span>"
+                f"&nbsp;<span style='background:{_plan_color}22;color:{_plan_color};"
+                f"border:1px solid {_plan_color}55;border-radius:10px;"
+                f"padding:1px 7px;font-size:10px;font-weight:700;'>{_plan_label}</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        with col_toggle:
+            is_dark = st.session_state.get("theme", "light") == "dark"
+            if st.button("🌙" if not is_dark else "☀️", width="stretch",
+                         help="Alternar tema / Toggle theme", key="theme_toggle_sb"):
+                st.session_state["theme"] = "light" if is_dark else "dark"
+                st.rerun()
 
-        # ── Language + Theme ─────────────────────────────────────────────────
-        col_lang, col_theme = st.columns([4, 1])
-        with col_lang:
+        # Upgrade CTA — near plan badge, not buried at the bottom
+        _current_plan = get_authenticated_plan()
+        if _auth_bridge.is_authenticated() and _current_plan in ("free", "pro"):
+            _up_label = "⚡ Upgrade to Pro →" if _current_plan == "free" else "⚡ Upgrade to Trader →"
+            st.markdown(
+                f"<div style='margin:2px 0 10px;'>"
+                f"<a href='Billing' style='font-size:11px;color:{th['accent']};"
+                f"text-decoration:none;font-weight:600;'>{_up_label}</a>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+        # ── Run button ───────────────────────────────────────────────────────
+        run_btn = st.button(t("run_analysis"), type="primary", width="stretch")
+        if "last_run" in st.session_state:
+            st.markdown(
+                f"<div style='text-align:center;color:{th['sb_text_muted']};font-size:11px;margin-top:2px;'>"
+                f"⏱ {t('last_run')}: {st.session_state['last_run']}</div>",
+                unsafe_allow_html=True,
+            )
+
+        # ── Analysis Settings (expander, open) ──────────────────────────────
+        with st.expander(f"⚙️ {t('sidebar_analysis')}", expanded=True):
+            bankroll = st.number_input(
+                t("bankroll"), min_value=10.0, max_value=1_000_000.0,
+                value=1000.0, step=100.0, format="%.0f",
+                help=t("help_bankroll"),
+            )
+            edge_threshold = st.slider(
+                t("edge_threshold"), min_value=1, max_value=30, value=5, step=1,
+                help=t("help_edge"),
+            ) / 100.0
+            _mem = t("members")
+            model = st.selectbox(
+                t("model"),
+                options=["ecmwf_ifs025", "gfs025"],
+                format_func=lambda x: f"ECMWF IFS 0.25° (51 {_mem})" if x == "ecmwf_ifs025" else f"GFS 0.25° (31 {_mem})",
+                help=t("help_model"),
+            )
+
+        # ── Market Filters (expander, open) ──────────────────────────────────
+        with st.expander(f"🔍 {t('sidebar_data')}", expanded=True):
+            _plan_limit = settings.PLAN_LIMITS.get(get_authenticated_plan(), {}).get("max_markets", 50)
+            max_markets = int(st.number_input(
+                t("max_markets"), min_value=5, max_value=_plan_limit, value=min(50, _plan_limit), step=10,
+                help=t("help_max_markets"),
+            ))
+            if _plan_limit < 200:
+                st.caption(f"Plano {settings.PLAN_LIMITS[get_authenticated_plan()]['label']}: máx {_plan_limit} mercados")
+            cities_filter = st.multiselect(
+                t("filter_cities"),
+                options=sorted(settings.CITY_COORDINATES.keys()),
+                default=[],
+                placeholder="Todas / All",
+                help=t("help_cities"),
+            )
+
+        # ── Preferences (expander, collapsed) ────────────────────────────────
+        with st.expander(f"🎛 {t('sidebar_display')}", expanded=False):
             lang_label = st.selectbox(
                 t("language"),
                 options=list(LANGUAGE_OPTIONS.keys()),
@@ -1134,82 +1186,16 @@ def render_sidebar(th: dict):
                 label_visibility="collapsed",
             )
             st.session_state["lang"] = LANGUAGE_OPTIONS[lang_label]
-        with col_theme:
-            is_dark = st.session_state.get("theme", "light") == "dark"
-            if st.button("🌙" if not is_dark else "☀️", width="stretch",
-                         help="Alternar tema / Toggle theme"):
-                st.session_state["theme"] = "light" if is_dark else "dark"
-                st.rerun()
+            auto_refresh = st.toggle(t("auto_refresh"), value=False, help=t("help_autorefresh"))
+            if auto_refresh:
+                refresh_interval = int(st.number_input(
+                    t("refresh_interval"), min_value=1, max_value=60, value=5, step=1,
+                ))
+                inject_autorefresh_js(refresh_interval, th)
 
-        # ── Run button (top, prominent) ──────────────────────────────────────
-        st.markdown("<div style='margin-top:10px'>", unsafe_allow_html=True)
-        run_btn = st.button(t("run_analysis"), type="primary", width="stretch")
-        if "last_run" in st.session_state:
-            st.markdown(
-                f"<div style='text-align:center; color:{th['sb_text_muted']}; font-size:11px; margin-top:4px;'>"
-                f"⏱ {t('last_run')}: {st.session_state['last_run']}</div>",
-                unsafe_allow_html=True,
-            )
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        # ── Analysis settings ────────────────────────────────────────────────
-        _sb_section(t("sidebar_analysis"), th)
-
-        bankroll = st.number_input(
-            t("bankroll"), min_value=10.0, max_value=1_000_000.0,
-            value=1000.0, step=100.0, format="%.0f",
-            help=t("help_bankroll"),
-        )
-        edge_threshold = st.slider(
-            t("edge_threshold"), min_value=1, max_value=30, value=5, step=1,
-            help=t("help_edge"),
-        ) / 100.0
-        _mem = t("members")
-        model = st.selectbox(
-            t("model"),
-            options=["ecmwf_ifs025", "gfs025"],
-            format_func=lambda x: f"ECMWF IFS 0.25° (51 {_mem})" if x == "ecmwf_ifs025" else f"GFS 0.25° (31 {_mem})",
-            help=t("help_model"),
-        )
-
-        # ── Data settings ────────────────────────────────────────────────────
-        _sb_section(t("sidebar_data"), th)
-
-        _plan_limit = settings.PLAN_LIMITS.get(get_authenticated_plan(), {}).get("max_markets", 50)
-        max_markets = int(st.number_input(
-            t("max_markets"), min_value=5, max_value=_plan_limit, value=min(50, _plan_limit), step=10,
-            help=t("help_max_markets"),
-        ))
-        if _plan_limit < 200:
-            st.caption(f"Plano {settings.PLAN_LIMITS[get_authenticated_plan()]['label']}: máx {_plan_limit} mercados")
-
-        cities_filter = st.multiselect(
-            t("filter_cities"),
-            options=sorted(settings.CITY_COORDINATES.keys()),
-            default=[],
-            placeholder="Todas / All",
-            help=t("help_cities"),
-        )
-
-        # ── Display settings ─────────────────────────────────────────────────
-        _sb_section(t("sidebar_display"), th)
-
-        auto_refresh = st.toggle(t("auto_refresh"), value=False, help=t("help_autorefresh"))
-        if auto_refresh:
-            refresh_interval = int(st.number_input(
-                t("refresh_interval"), min_value=1, max_value=60, value=5, step=1,
-            ))
-            inject_autorefresh_js(refresh_interval, th)
-
-        # ── Auth / Wallet (MetaMask + Email tabs handled by process_auth_flow) ──
-        _sb_section(f"🔐 {t('wallet')}", th)
+        # ── Account / Wallet (sign out) ───────────────────────────────────────
+        st.divider()
         render_wallet_sidebar(t)
-
-        # ── Quick links to Account / Billing pages ────────────────────────────
-        _current_plan = get_authenticated_plan()
-        if _auth_bridge.is_authenticated() and _current_plan in ("free", "pro"):
-            upgrade_label = "⚡ Upgrade to Pro" if _current_plan == "free" else "⚡ Upgrade to Trader"
-            st.caption(f"[{upgrade_label}](billing)", help="Go to Billing page to upgrade your plan")
 
     # wallet_address from auth state (not from sidebar widget return)
     wallet_address = _auth_bridge.get_authenticated_address() or "anonymous"

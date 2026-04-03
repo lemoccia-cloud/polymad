@@ -7,10 +7,19 @@ Accessible via st.navigation() from the main dashboard.
 from datetime import datetime
 
 import streamlit as st
+import streamlit.components.v1 as _components
 
 import src.components.auth_bridge as auth_bridge
 from src.components.app_header import render_app_header
 from src.components.wallet import process_auth_flow
+
+
+def _redirect(url: str) -> None:
+    """Perform a top-level browser redirect to url."""
+    _components.html(
+        f'<script>window.top.location.href = {repr(url)};</script>',
+        height=0,
+    )
 
 _PLAN_FEATURES = {
     "free": [
@@ -95,8 +104,7 @@ def render_billing_page(t=None, app_base_url: str = "") -> None:
             if st.button("⭐ Upgrade to Pro — $19/mo", type="primary"):
                 url = auth_bridge.get_checkout_url("pro", success_url, cancel_url)
                 if url:
-                    st.markdown(f'<meta http-equiv="refresh" content="0;url={url}">',
-                                unsafe_allow_html=True)
+                    _redirect(url)
                 else:
                     st.error(_t("checkout_error", "Could not create checkout session. Please try again."))
 
@@ -105,8 +113,7 @@ def render_billing_page(t=None, app_base_url: str = "") -> None:
             if st.button(btn_label, type="secondary" if plan == "pro" else "primary"):
                 url = auth_bridge.get_checkout_url("trader", success_url, cancel_url)
                 if url:
-                    st.markdown(f'<meta http-equiv="refresh" content="0;url={url}">',
-                                unsafe_allow_html=True)
+                    _redirect(url)
                 else:
                     st.error(_t("checkout_error", "Could not create checkout session. Please try again."))
 
@@ -116,8 +123,7 @@ def render_billing_page(t=None, app_base_url: str = "") -> None:
             if st.button(_t("manage_sub_btn", "Manage Subscription"), type="secondary"):
                 url = auth_bridge.get_portal_url(portal_url_return)
                 if url:
-                    st.markdown(f'<meta http-equiv="refresh" content="0;url={url}">',
-                                unsafe_allow_html=True)
+                    _redirect(url)
                 else:
                     st.error(_t("portal_error", "No billing account found. Complete a purchase first."))
 
