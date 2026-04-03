@@ -65,6 +65,14 @@ def render_billing_page(t=None, app_base_url: str = "") -> None:
         st.info(_t("billing_login_required", "Sign in to manage your subscription."))
         return
 
+    # ── Pending redirect (isolated render + st.stop so JS fires cleanly) ──────
+    # Pattern: button click → store URL in session_state → rerun → redirect → stop
+    _pending_url = st.session_state.pop("_billing_redirect_url", None)
+    if _pending_url:
+        st.info("Redirecting to checkout…")
+        _redirect(_pending_url)
+        st.stop()
+
     plan = auth_bridge.get_authenticated_plan()
 
     st.title(_t("billing_title", "Billing"))
@@ -95,37 +103,40 @@ def render_billing_page(t=None, app_base_url: str = "") -> None:
     with col_actions:
         base = app_base_url.rstrip("/") if app_base_url else ""
         success_url = f"{base}/?plan_success=1" if base else "/?plan_success=1"
-        cancel_url  = f"{base}/billing" if base else "/billing"
+        cancel_url  = f"{base}/Billing" if base else "/Billing"
+
+        def _start_checkout(target_plan: str) -> None:
+            url = auth_bridge.get_checkout_url(target_plan, success_url, cancel_url)
+            if url:
+                st.session_state["_billing_redirect_url"] = url
+                st.rerun()
+            else:
+                _err = st.session_state.get("_checkout_error", "")
+                st.error(
+                    _t("checkout_error", "Could not create checkout session.")
+                    + (f"\n\n`{_err}`" if _err else "")
+                )
 
         if plan != "trader":
             st.markdown(f"**{_t('upgrade_heading', 'Upgrade your plan')}**")
 
         if plan == "free":
             if st.button("⭐ Upgrade to Pro — $19/mo", type="primary"):
-                url = auth_bridge.get_checkout_url("pro", success_url, cancel_url)
-                if url:
-                    _redirect(url)
-                else:
-                    _err = st.session_state.get("_checkout_error", "")
-                    st.error(_t("checkout_error", "Could not create checkout session.") + (f"\n\n`{_err}`" if _err else ""))
+                _start_checkout("pro")
 
         if plan in ("free", "pro"):
             btn_label = "🚀 Upgrade to Trader — $49/mo" if plan == "pro" else "🚀 Get Trader — $49/mo"
             if st.button(btn_label, type="secondary" if plan == "pro" else "primary"):
-                url = auth_bridge.get_checkout_url("trader", success_url, cancel_url)
-                if url:
-                    _redirect(url)
-                else:
-                    _err = st.session_state.get("_checkout_error", "")
-                    st.error(_t("checkout_error", "Could not create checkout session.") + (f"\n\n`{_err}`" if _err else ""))
+                _start_checkout("trader")
 
         if plan != "free":
             st.divider()
-            portal_url_return = f"{base}/billing" if base else "/billing"
+            portal_url_return = f"{base}/Billing" if base else "/Billing"
             if st.button(_t("manage_sub_btn", "Manage Subscription"), type="secondary"):
                 url = auth_bridge.get_portal_url(portal_url_return)
                 if url:
-                    _redirect(url)
+                    st.session_state["_billing_redirect_url"] = url
+                    st.rerun()
                 else:
                     st.error(_t("portal_error", "No billing account found. Complete a purchase first."))
 
