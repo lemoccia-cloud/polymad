@@ -106,7 +106,8 @@ def render_billing_page(t=None, app_base_url: str = "") -> None:
                 if url:
                     _redirect(url)
                 else:
-                    st.error(_t("checkout_error", "Could not create checkout session. Please try again."))
+                    _err = st.session_state.get("_checkout_error", "")
+                    st.error(_t("checkout_error", "Could not create checkout session.") + (f"\n\n`{_err}`" if _err else ""))
 
         if plan in ("free", "pro"):
             btn_label = "🚀 Upgrade to Trader — $49/mo" if plan == "pro" else "🚀 Get Trader — $49/mo"
@@ -115,7 +116,8 @@ def render_billing_page(t=None, app_base_url: str = "") -> None:
                 if url:
                     _redirect(url)
                 else:
-                    st.error(_t("checkout_error", "Could not create checkout session. Please try again."))
+                    _err = st.session_state.get("_checkout_error", "")
+                    st.error(_t("checkout_error", "Could not create checkout session.") + (f"\n\n`{_err}`" if _err else ""))
 
         if plan != "free":
             st.divider()

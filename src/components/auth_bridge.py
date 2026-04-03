@@ -277,10 +277,12 @@ def register_email(email: str, password: str, display_name: str = "") -> dict:
 def get_checkout_url(plan: str, success_url: str, cancel_url: str) -> Optional[str]:
     """
     Create a Stripe Checkout Session for the given plan and return the checkout URL.
+    Stores a human-readable error in st.session_state['_checkout_error'] on failure.
     Returns None if unauthenticated or on any error.
     """
     if not is_authenticated():
         return None
+    st.session_state.pop("_checkout_error", None)
     try:
         resp = httpx.post(
             f"{_FASTAPI_BASE}/api/billing/checkout",
@@ -291,10 +293,13 @@ def get_checkout_url(plan: str, success_url: str, cancel_url: str) -> Optional[s
         resp.raise_for_status()
         return resp.json().get("checkout_url")
     except httpx.HTTPStatusError as exc:
-        logger.error("auth_bridge: get_checkout_url HTTP %s — %s", exc.response.status_code, exc.response.text)
+        detail = exc.response.json().get("detail", exc.response.text) if exc.response.content else str(exc)
+        logger.error("auth_bridge: get_checkout_url HTTP %s — %s", exc.response.status_code, detail)
+        st.session_state["_checkout_error"] = f"[{exc.response.status_code}] {detail}"
         return None
     except Exception as exc:
         logger.error("auth_bridge: get_checkout_url failed — %s", exc)
+        st.session_state["_checkout_error"] = str(exc)
         return None
 
 
