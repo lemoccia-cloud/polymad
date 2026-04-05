@@ -15,3 +15,7 @@ venv/
 env/
 .streamlit/secrets.toml
 .dev_jwt_key
+
+# Local Stripe test keys — NEVER commit this file
+.stripe_test_keys
+*.stripe_keys

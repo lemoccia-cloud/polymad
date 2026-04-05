@@ -34,7 +34,17 @@ if [ -z "$JWT_SECRET_KEY" ]; then
     export JWT_SECRET_KEY="$(cat $KEY_FILE)"
 fi
 
-# Stripe stubs (billing endpoints gracefully return 503 without real keys)
+# Stripe keys — lê de .stripe_test_keys se existir (gitignored, NUNCA commitar)
+if [ -f ".stripe_test_keys" ]; then
+    if grep -q "sk_live_" ".stripe_test_keys" 2>/dev/null; then
+        echo "⚠️  .stripe_test_keys contém chave LIVE — ignorando por segurança."
+    else
+        # shellcheck disable=SC2046
+        export $(grep -v '^#' .stripe_test_keys | grep -v '^$' | xargs) 2>/dev/null || true
+        echo "✓ Stripe test keys loaded from .stripe_test_keys"
+    fi
+fi
+# Fallback stubs (billing endpoints retornam 503 sem keys reais — esperado)
 export STRIPE_SECRET_KEY="${STRIPE_SECRET_KEY:-sk_test_stub}"
 export STRIPE_WEBHOOK_SECRET="${STRIPE_WEBHOOK_SECRET:-whsec_stub}"
 export STRIPE_PRICE_PRO_MONTHLY="${STRIPE_PRICE_PRO_MONTHLY:-price_stub_pro}"
